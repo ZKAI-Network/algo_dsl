@@ -1,0 +1,20 @@
+# Environments
+.env
+.envrc
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Cursor
+.cursorignore
+.cursorindexingignore
+
+# Node / pnpm (ds_frontend workspace)
+node_modules
+pnpm-lock.yaml
+
+#Mac
+.DS_Store

@@ -1,0 +1,25 @@
+In @algo_dsl/llms.txt, concatenate all the source code in @algo_dsl
+and prepare it to be used by AI coding agents.
+
+* Introduction: 
+overall description of the Studio object, entry points and typical flows.
+
+* Data catalog: 
+study the frontend in @ds_frontend/app/src and enumerate available indices for searching, 
+and in each one, the different fields and filter types that can be used for filtering or boosting. 
+For kalshi-items, include tags, series_category, series_tags, status, ticker, and event_id.
+
+# Filter types: 
+enumerate the available filter types and provide examples on how to use them.
+Use the implementation details in @ds_search/backend/candidate_generation to understand exactly how the filters work under the hood.
+For numeric filters, make sure you list the available operators.
+For groupBoost filter, make sure you explain how it works and document it enough to be used properly. 
+In general, document all the filters so that the SDK consumers don't need to guess how to use them and which options are available.
+
+* FAQ: 
+Add useful tips that can be useful for consuming the studio or debugging.
+
+* Source code:
+Decide on the best order to present the files to optimize LLMs performance,
+Then dump the complete source code of the studio, making it as compact as possible.
+

@@ -1,0 +1,33 @@
+{
+  "name": "algo-dsl",
+  "version": "0.1.0",
+  "description": "Embed Recommendation Algorithms DSL",
+  "keywords": [
+    "web3",
+    "AI",
+    "recommendations",
+    "polymarket",
+    "farcaster",
+    "zora",
+    "kalshi",
+    "wallets"
+  ],
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "StudioConfig.js",
+    "V1",
+    "llms.txt"
+  ],
+  "private": true
+}
