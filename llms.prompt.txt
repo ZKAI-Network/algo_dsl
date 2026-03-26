@@ -21,5 +21,5 @@ Add useful tips that can be useful for consuming the studio or debugging.
 
 * Source code:
 Decide on the best order to present the files to optimize LLMs performance,
-Then dump the complete source code of the studio, making it as compact as possible.
+Then dump the complete source code, making it as compact as possible.
 
