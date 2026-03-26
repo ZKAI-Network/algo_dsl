@@ -1,7 +1,11 @@
 {
   "name": "algo-dsl",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "Embed Recommendation Algorithms DSL",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ZKAI-Network/algo_dsl.git"
+  },
   "keywords": [
     "web3",
     "AI",
@@ -28,6 +32,5 @@
     "StudioConfig.js",
     "V1",
     "llms.txt"
-  ],
-  "private": true
+  ]
 }
