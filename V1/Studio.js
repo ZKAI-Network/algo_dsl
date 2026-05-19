@@ -28,6 +28,7 @@ export class Studio {
   search() {
     return new Search({
       url: this._config.searchService,
+      storiesUrl: this._config.storiesService,
       apiKey: this._config.apiKey,
       origin: this._origin,
       log: this._log,
