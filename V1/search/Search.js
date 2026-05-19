@@ -25,7 +25,7 @@ export class Search {
     if (!options || typeof options !== 'object') {
       throw new Error('Search: options object is required');
     }
-    const { url, apiKey, origin = 'sdk', log, show } = options;
+    const { url, storiesUrl, apiKey, origin = 'sdk', log, show } = options;
     if (typeof url !== 'string' || !url.trim()) {
       throw new Error('Search: options.url is required and must be a non-empty string');
     }
@@ -33,6 +33,9 @@ export class Search {
       throw new Error('Search: options.apiKey is required and must be a non-empty string');
     }
     this._url = url.trim().replace(/\/$/, '');
+    this._storiesUrl = typeof storiesUrl === 'string' && storiesUrl.trim()
+      ? storiesUrl.trim().replace(/\/$/, '')
+      : this._url;
     this._apiKey = apiKey.trim();
     this._origin = typeof origin === 'string' && origin.trim() ? origin.trim() : 'sdk';
     this._log = typeof log === 'function' ? log : console.log.bind(console);
@@ -157,7 +160,72 @@ export class Search {
     this._log(`  took_backend: ${infos.took_backend}`);
     this._log(`  took_sdk: ${infos.took_sdk}`);
     this._log(`  max_score: ${infos.max_score}`);
+    await this._enrichUserTrades(res.hits);
     return res.hits;
+  }
+  /**
+   * Auto-enrich each hit's `_source` with `user_trades` (15 latest) when the
+   * search index is one of the supported indexes. One batched POST to
+   * /stories/generate per execute() — failures degrade silently (empty list)
+   * so they don't break the algorithm.
+   */
+  async _enrichUserTrades(hits) {
+    if (!Array.isArray(hits) || hits.length === 0) return;
+    const index = (this._index || '').trim();
+    let engine = null;
+    let tradesField = null; // field name inside each engine's *_infos.<id>
+    let paramsKey = 'item_ids'; // 'item_ids' for kalshi/polymarket, ditto for token_items_v1 (composite ids)
+    let limitKey = 'bet_limit';
+    let infosKey = 'market_infos';
+    let perItemTradeField = 'bets';
+    if (index.startsWith('polymarket-items')) {
+      engine = 'polymarket_v3';
+    } else if (index.startsWith('kalshi-items')) {
+      engine = 'kalshi_v1';
+    } else if (index.startsWith('token-items')) {
+      engine = 'token_items_v1';
+      limitKey = 'trade_limit';
+      infosKey = 'item_infos';
+      perItemTradeField = 'interesting_trades';
+    } else {
+      return; // not a supported index — no-op
+    }
+    const itemIds = [];
+    for (const h of hits) {
+      if (h && typeof h._id === 'string' && h._id) itemIds.push(h._id);
+    }
+    if (itemIds.length === 0) return;
+    const payload = { engine, params: { [paramsKey]: itemIds, [limitKey]: 15 } };
+    const url = `${this._storiesUrl}/stories/generate`;
+    try {
+      const t0 = performance.now();
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this._apiKey}` },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        this._log(`user_trades enrichment skipped (HTTP ${response.status} ${response.statusText}): ${text.slice(0, 200)}`);
+        return;
+      }
+      const data = await response.json();
+      const infos = data?.[infosKey] || {};
+      let attached = 0;
+      for (const h of hits) {
+        if (!h || typeof h !== 'object') continue;
+        if (!h._source || typeof h._source !== 'object') h._source = {};
+        const info = infos[h._id];
+        const trades = info && Array.isArray(info[perItemTradeField]) ? info[perItemTradeField] : [];
+        h._source.user_trades = trades;
+        if (trades.length > 0) attached++;
+      }
+      const ms = Math.round(performance.now() - t0);
+      this._log(`user_trades enriched ${attached}/${hits.length} hits via ${engine} in ${ms}ms`);
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      this._log(`user_trades enrichment failed: ${msg}`);
+    }
   }
   async frequentValues(field, size = 25) {
     if (!this._index || typeof this._index !== 'string' || !this._index.trim()) {
