@@ -164,68 +164,181 @@ export class Search {
     return res.hits;
   }
   /**
-   * Auto-enrich each hit's `_source` with `user_trades` (15 latest) when the
-   * search index is one of the supported indexes. One batched POST to
-   * /stories/generate per execute() — failures degrade silently (empty list)
-   * so they don't break the algorithm.
+   * Auto-enrich each hit's `_source` with `user_trades` — a 50/50 mix of
+   * "interesting" and "convergence" records normalized to one shape per
+   * family (TRADE for token-items, BET for polymarket/kalshi items). The
+   * `record_type` field is the only discriminator; the rest of the fields
+   * are identical between the two halves so consumers render uniformly.
+   *
+   * Mirrors `ds_search/backend/candidate_generation/utils/user_trades.py`.
+   * Both layers compute the same shape so callers see consistent data
+   * whether they go through the SDK or hit /search/* directly.
+   *
+   * Failures degrade silently: on any HTTP/network error the hits are
+   * still returned (with user_trades absent or partial) and a log line
+   * is emitted via the SDK's log callback.
    */
   async _enrichUserTrades(hits) {
     if (!Array.isArray(hits) || hits.length === 0) return;
     const index = (this._index || '').trim();
-    let engine = null;
-    let tradesField = null; // field name inside each engine's *_infos.<id>
-    let paramsKey = 'item_ids'; // 'item_ids' for kalshi/polymarket, ditto for token_items_v1 (composite ids)
-    let limitKey = 'bet_limit';
-    let infosKey = 'market_infos';
-    let perItemTradeField = 'bets';
-    if (index.startsWith('polymarket-items')) {
-      engine = 'polymarket_v3';
-    } else if (index.startsWith('kalshi-items')) {
-      engine = 'kalshi_v1';
-    } else if (index.startsWith('token-items')) {
-      engine = 'token_items_v1';
-      limitKey = 'trade_limit';
-      infosKey = 'item_infos';
-      perItemTradeField = 'interesting_trades';
+    const conf = this._userTradesConf(index);
+    if (!conf) return; // unsupported index — no-op
+
+    const { engine, infosKey, limitKey, lookupKey, family } = conf;
+    const params = { [limitKey]: 15 };
+    const rowKeyByHitIdx = new Array(hits.length).fill(null);
+    const chainAddrByHitIdx = new Array(hits.length).fill(null);
+    if (lookupKey === 'id') {
+      const itemIds = [];
+      for (let i = 0; i < hits.length; i++) {
+        const h = hits[i];
+        if (h && typeof h._id === 'string' && h._id) {
+          itemIds.push(h._id);
+          rowKeyByHitIdx[i] = h._id;
+        }
+      }
+      if (itemIds.length === 0) return;
+      params.item_ids = itemIds;
+    } else if (lookupKey === 'chain_address') {
+      const tokens = [];
+      for (let i = 0; i < hits.length; i++) {
+        const h = hits[i];
+        const src = (h && h._source) || {};
+        const chain = String(src.chain || '').trim().toLowerCase();
+        const addr = String(src.token_address || '').trim().toLowerCase();
+        if (chain && addr) {
+          tokens.push({ chain, address: addr });
+          rowKeyByHitIdx[i] = `TOKEN#${chain}#${addr}#METADATA`;
+          chainAddrByHitIdx[i] = [chain, addr];
+        }
+      }
+      if (tokens.length === 0) return;
+      params.tokens = tokens;
     } else {
-      return; // not a supported index — no-op
+      return;
     }
-    const itemIds = [];
-    for (const h of hits) {
-      if (h && typeof h._id === 'string' && h._id) itemIds.push(h._id);
+
+    const t0 = performance.now();
+    const data = await this._postStories(engine, params);
+    if (!data) return;
+    const infos = (data && data[infosKey]) || {};
+
+    let notificationsByToken = new Map();
+    if (family === 'trade') {
+      const uniqueAddrs = new Set();
+      for (const ca of chainAddrByHitIdx) {
+        if (ca) uniqueAddrs.add(ca[1]);
+      }
+      notificationsByToken = await this._fetchDexNotificationsFor(
+        Array.from(uniqueAddrs),
+        15,
+      );
     }
-    if (itemIds.length === 0) return;
-    const payload = { engine, params: { [paramsKey]: itemIds, [limitKey]: 15 } };
+
+    let attached = 0;
+    for (let i = 0; i < hits.length; i++) {
+      const h = hits[i];
+      if (!h || typeof h !== 'object') continue;
+      if (!h._source || typeof h._source !== 'object') h._source = {};
+      const info = infos[rowKeyByHitIdx[i]] || {};
+      let mixed;
+      if (family === 'bet') {
+        const rawBets = Array.isArray(info.bets) ? info.bets : [];
+        const rawCbets = Array.isArray(info.convergence_bets) ? info.convergence_bets : [];
+        const interesting = rawBets.map((b) => mapInterestingBet(b));
+        const convergence = rawCbets
+          .map((cb) => mapConvergenceBet(cb, rowKeyByHitIdx[i]))
+          .filter((x) => x);
+        mixed = mix5050(interesting, convergence, 15);
+      } else {
+        const rawTrades = Array.isArray(info.interesting_trades)
+          ? info.interesting_trades
+          : [];
+        const ca = chainAddrByHitIdx[i];
+        const rawNotifs = ca ? notificationsByToken.get(`${ca[0]}::${ca[1]}`) || [] : [];
+        const interesting = rawTrades.map((t) => mapInterestingTrade(t));
+        const convergence = rawNotifs
+          .map((n) => mapConvergenceTrade(n))
+          .filter((x) => x);
+        mixed = mix5050(interesting, convergence, 15);
+      }
+      h._source.user_trades = mixed;
+      if (mixed.length > 0) attached++;
+    }
+    const ms = Math.round(performance.now() - t0);
+    this._log(`user_trades enriched ${attached}/${hits.length} hits via ${engine} (family=${family}) in ${ms}ms`);
+  }
+
+  _userTradesConf(index) {
+    if (index.startsWith('polymarket-items')) {
+      return { engine: 'polymarket_v3', infosKey: 'market_infos', limitKey: 'bet_limit', lookupKey: 'id', family: 'bet' };
+    }
+    if (index.startsWith('kalshi-items')) {
+      return { engine: 'kalshi_v1', infosKey: 'market_infos', limitKey: 'bet_limit', lookupKey: 'id', family: 'bet' };
+    }
+    if (index.startsWith('token-items')) {
+      return { engine: 'token_items_v1', infosKey: 'item_infos', limitKey: 'trade_limit', lookupKey: 'chain_address', family: 'trade' };
+    }
+    return null;
+  }
+
+  async _postStories(engine, params) {
     const url = `${this._storiesUrl}/stories/generate`;
     try {
-      const t0 = performance.now();
       const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this._apiKey}` },
+        body: JSON.stringify({ engine, params }),
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        this._log(`user_trades stories call skipped (HTTP ${response.status}): ${text.slice(0, 200)}`);
+        return null;
+      }
+      return await response.json();
+    } catch (err) {
+      this._log(`user_trades stories call failed: ${err && err.message ? err.message : err}`);
+      return null;
+    }
+  }
+
+  async _fetchDexNotificationsFor(addresses, perTokenLimit) {
+    const out = new Map();
+    if (!addresses || addresses.length === 0) return out;
+    try {
+      const payload = {
+        index: 'alpha-notifications-dex',
+        origin: this._origin,
+        feed_type: 'filter_and_sort',
+        size: 100 * perTokenLimit,
+        include: [{ filter: 'terms', field: 'token_address', value: addresses }],
+        exclude: [],
+        sort_by: { field: 'timestamp', order: 'desc' },
+      };
+      const response = await fetch(`${this._url}/search/filter_and_sort`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this._apiKey}` },
         body: JSON.stringify(payload),
       });
-      if (!response.ok) {
-        const text = await response.text().catch(() => '');
-        this._log(`user_trades enrichment skipped (HTTP ${response.status} ${response.statusText}): ${text.slice(0, 200)}`);
-        return;
-      }
+      if (!response.ok) return out;
       const data = await response.json();
-      const infos = data?.[infosKey] || {};
-      let attached = 0;
+      const hits = (data?.result?.hits) || [];
       for (const h of hits) {
-        if (!h || typeof h !== 'object') continue;
-        if (!h._source || typeof h._source !== 'object') h._source = {};
-        const info = infos[h._id];
-        const trades = info && Array.isArray(info[perItemTradeField]) ? info[perItemTradeField] : [];
-        h._source.user_trades = trades;
-        if (trades.length > 0) attached++;
+        const src = h?._source || {};
+        const chain = String(src.chain || '').toLowerCase();
+        const addr = String(src.token_address || '').toLowerCase();
+        if (!chain || !addr) continue;
+        const key = `${chain}::${addr}`;
+        const bucket = out.get(key) || [];
+        if (bucket.length < perTokenLimit) {
+          bucket.push(src);
+          out.set(key, bucket);
+        }
       }
-      const ms = Math.round(performance.now() - t0);
-      this._log(`user_trades enriched ${attached}/${hits.length} hits via ${engine} in ${ms}ms`);
     } catch (err) {
-      const msg = err && err.message ? err.message : String(err);
-      this._log(`user_trades enrichment failed: ${msg}`);
+      this._log(`user_trades dex-notifications query failed: ${err && err.message ? err.message : err}`);
     }
+    return out;
   }
   async frequentValues(field, size = 25) {
     if (!this._index || typeof this._index !== 'string' || !this._index.trim()) {
@@ -459,4 +572,87 @@ export class Search {
   show(results) {
     this._show(results);
   }
+}
+
+
+// --- user_trades helpers (canonical schemas, mix algorithm) ----------------
+function isoToEpochS(s) {
+  if (typeof s !== 'string' || !s) return null;
+  const t = Date.parse(s);
+  if (Number.isNaN(t)) return null;
+  return Math.floor(t / 1000);
+}
+
+function mapInterestingTrade(t) {
+  if (!t || typeof t !== 'object') return null;
+  return { ...t, record_type: 'interesting_trade' };
+}
+
+function mapConvergenceTrade(n) {
+  if (!n || typeof n !== 'object') return null;
+  const notifType = String(n.notification_type || '').toLowerCase();
+  const direction = notifType.includes('sell') ? 'sell' : 'buy';
+  const ts = n.timestamp || n.created_at;
+  let epoch = null;
+  if (typeof ts === 'string') epoch = isoToEpochS(ts);
+  else if (typeof ts === 'number') epoch = Math.floor(ts);
+  const wallets = Array.isArray(n.trader_wallets) ? n.trader_wallets : [];
+  return {
+    record_type: 'convergence_trade',
+    amount_usd: n.total_usd_inflow ?? null,
+    block_timestamp: epoch,
+    chain: n.chain ?? null,
+    direction,
+    project: n.cta_action ?? null,
+    protocol: n.signal_type ?? null,
+    token_address: n.token_address ?? null,
+    tx_hash: null,
+    wallet_24h_volume_usd: null,
+    wallet_address: wallets[0] ?? null,
+  };
+}
+
+function mapInterestingBet(b) {
+  if (!b || typeof b !== 'object') return null;
+  return { ...b, record_type: 'interesting_bet' };
+}
+
+function mapConvergenceBet(cb, marketId) {
+  if (!cb || typeof cb !== 'object') return null;
+  return {
+    record_type: 'convergence_bet',
+    event: 'TRADE',
+    id: cb.signal_id ?? null,
+    item_id: marketId ?? null,
+    outcome: cb.outcome_label ?? null,
+    price: null,
+    shares: null,
+    side: cb.direction ?? null,
+    timestamp: cb.traded_at ?? null,
+    usdc: cb.size_usd ?? null,
+    user_id: cb.wallet ?? null,
+    user_name: null,
+    user_pfp: null,
+    user_pseudonym: null,
+    user_pnl: cb.realized_pnl_usd ?? null,
+    user_volume: null,
+  };
+}
+
+function mix5050(interesting, convergence, limit) {
+  const half = Math.floor(limit / 2);
+  const odd = limit - 2 * half;
+  let takeI = Math.min(interesting.length, half + odd);
+  let takeC = Math.min(convergence.length, half);
+  let deficit = limit - takeI - takeC;
+  if (deficit > 0) {
+    const extra = Math.min(deficit, interesting.length - takeI);
+    takeI += extra;
+    deficit -= extra;
+  }
+  if (deficit > 0) {
+    const extra = Math.min(deficit, convergence.length - takeC);
+    takeC += extra;
+  }
+  return interesting.slice(0, takeI).concat(convergence.slice(0, takeC));
 }
