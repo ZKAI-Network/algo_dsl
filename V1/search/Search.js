@@ -184,7 +184,7 @@ export class Search {
     const conf = this._userTradesConf(index);
     if (!conf) return; // unsupported index — no-op
 
-    const { engine, infosKey, limitKey, lookupKey, family } = conf;
+    const { engine, infosKey, limitKey, lookupKey, family, convStrategy } = conf;
     const params = { [limitKey]: 15 };
     const rowKeyByHitIdx = new Array(hits.length).fill(null);
     const chainAddrByHitIdx = new Array(hits.length).fill(null);
@@ -224,7 +224,7 @@ export class Search {
     const infos = (data && data[infosKey]) || {};
 
     let notificationsByToken = new Map();
-    if (family === 'trade') {
+    if (family === 'trade' && convStrategy === 'dex_es') {
       const uniqueAddrs = new Set();
       for (const ca of chainAddrByHitIdx) {
         if (ca) uniqueAddrs.add(ca[1]);
@@ -254,12 +254,18 @@ export class Search {
         const rawTrades = Array.isArray(info.interesting_trades)
           ? info.interesting_trades
           : [];
-        const ca = chainAddrByHitIdx[i];
-        const rawNotifs = ca ? notificationsByToken.get(`${ca[0]}::${ca[1]}`) || [] : [];
         const interesting = rawTrades.map((t) => mapInterestingTrade(t));
-        const convergence = rawNotifs
-          .map((n) => mapConvergenceTrade(n))
-          .filter((x) => x);
+        let convergence = [];
+        if (convStrategy === 'dex_es') {
+          const ca = chainAddrByHitIdx[i];
+          const rawNotifs = ca ? notificationsByToken.get(`${ca[0]}::${ca[1]}`) || [] : [];
+          convergence = rawNotifs.map((n) => mapConvergenceTrade(n)).filter((x) => x);
+        } else if (convStrategy === 'bt') {
+          const rawConv = Array.isArray(info.convergence_trades) ? info.convergence_trades : [];
+          convergence = rawConv
+            .map((t) => mapHlConvergenceTrade(t, rowKeyByHitIdx[i]))
+            .filter((x) => x);
+        }
         mixed = mix5050(interesting, convergence, 15);
       }
       h._source.user_trades = mixed;
@@ -271,13 +277,16 @@ export class Search {
 
   _userTradesConf(index) {
     if (index.startsWith('polymarket-items')) {
-      return { engine: 'polymarket_v3', infosKey: 'market_infos', limitKey: 'bet_limit', lookupKey: 'id', family: 'bet' };
+      return { engine: 'polymarket_v3', infosKey: 'market_infos', limitKey: 'bet_limit', lookupKey: 'id', family: 'bet', convStrategy: 'bt' };
     }
     if (index.startsWith('kalshi-items')) {
-      return { engine: 'kalshi_v1', infosKey: 'market_infos', limitKey: 'bet_limit', lookupKey: 'id', family: 'bet' };
+      return { engine: 'kalshi_v1', infosKey: 'market_infos', limitKey: 'bet_limit', lookupKey: 'id', family: 'bet', convStrategy: 'none' };
     }
     if (index.startsWith('token-items')) {
-      return { engine: 'token_items_v1', infosKey: 'item_infos', limitKey: 'trade_limit', lookupKey: 'chain_address', family: 'trade' };
+      return { engine: 'token_items_v1', infosKey: 'item_infos', limitKey: 'trade_limit', lookupKey: 'chain_address', family: 'trade', convStrategy: 'dex_es' };
+    }
+    if (index.startsWith('hyperliquid-items')) {
+      return { engine: 'hyperliquid_items_v1', infosKey: 'item_infos', limitKey: 'trade_limit', lookupKey: 'id', family: 'trade', convStrategy: 'bt' };
     }
     return null;
   }
@@ -615,6 +624,27 @@ function mapConvergenceTrade(n) {
 function mapInterestingBet(b) {
   if (!b || typeof b !== 'object') return null;
   return { ...b, record_type: 'interesting_bet' };
+}
+
+function mapHlConvergenceTrade(ct, marketId) {
+  if (!ct || typeof ct !== 'object') return null;
+  const tokenAddress = (typeof marketId === 'string' && marketId)
+    ? marketId.split(':').pop()
+    : null;
+  const direction = (ct.direction || '').toString().toLowerCase() || null;
+  return {
+    record_type: 'convergence_trade',
+    amount_usd: ct.trade_size_usd ?? null,
+    block_timestamp: isoToEpochS(ct.traded_at),
+    chain: 'hyperliquid',
+    direction,
+    project: 'hyperliquid',
+    protocol: 'convergence',
+    token_address: tokenAddress,
+    tx_hash: ct.tx_hash ?? null,
+    wallet_24h_volume_usd: null,
+    wallet_address: ct.wallet ?? null,
+  };
 }
 
 function mapConvergenceBet(cb, marketId) {
