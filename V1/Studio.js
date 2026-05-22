@@ -158,6 +158,77 @@ export class Studio {
   getFeed() {
     return this._candidates;
   }
+  /**
+   * Hydrate one or more targets on a caller-supplied list of hits via the
+   * server's /hydration/run endpoint. Mutates `hits` in place and returns
+   * the same array for chaining.
+   *
+   * Example:
+   *   await mbd.hydrate(hits, {
+   *     '_source.user_trades': { limit: 15, sources: [
+   *       { plugin: 'polymarket_interesting_bets', share: 0.5 },
+   *       { plugin: 'polymarket_convergence_bets', share: 0.5 },
+   *     ] },
+   *   });
+   */
+  async hydrate(hits, spec) {
+    if (!Array.isArray(hits) || hits.length === 0) return hits;
+    if (!spec || typeof spec !== 'object') {
+      throw new Error('Studio.hydrate: spec object is required');
+    }
+    const index = hits[0]?._index;
+    if (typeof index !== 'string' || !index) {
+      throw new Error('Studio.hydrate: hits[0]._index must be a non-empty string');
+    }
+    const url = `${this._config.searchService.replace(/\/$/, '')}/hydration/run`;
+    const body = JSON.stringify({ index, hits, hydrate: spec });
+    const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this._config.apiKey}` },
+        body,
+      });
+    } catch (err) {
+      this._log(`Studio.hydrate fetch failed: ${err && err.message ? err.message : err}`);
+      return hits;
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      this._log(`Studio.hydrate HTTP ${response.status}: ${text.slice(0, 200)}`);
+      return hits;
+    }
+    const data = await response.json().catch(() => null);
+    if (!data || !Array.isArray(data.hits)) return hits;
+    // Server returns the same hits with merged _source — overwrite in place.
+    for (let i = 0; i < hits.length; i++) {
+      const updated = data.hits[i];
+      if (updated && updated._source && typeof updated._source === 'object') {
+        Object.assign(hits[i]._source || (hits[i]._source = {}), updated._source);
+      }
+    }
+    const ms = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - t0);
+    this._log(`hydrate: ${hits.length} hits, targets=${Object.keys(spec).join(',')}, ${ms}ms`);
+    return hits;
+  }
+  /** GET /hydration/plugins — registered plugin catalogue. */
+  async hydrationPlugins() {
+    const url = `${this._config.searchService.replace(/\/$/, '')}/hydration/plugins`;
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${this._config.apiKey}` } });
+    if (!response.ok) throw new Error(`hydrationPlugins HTTP ${response.status}`);
+    const data = await response.json();
+    return data?.plugins || [];
+  }
+  /** GET /hydration/defaults/{index} — per-index default spec. */
+  async hydrationDefaults(index) {
+    if (typeof index !== 'string' || !index) throw new Error('hydrationDefaults: index required');
+    const url = `${this._config.searchService.replace(/\/$/, '')}/hydration/defaults/${encodeURIComponent(index)}`;
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${this._config.apiKey}` } });
+    if (!response.ok) throw new Error(`hydrationDefaults HTTP ${response.status}`);
+    const data = await response.json();
+    return data?.hydrate || {};
+  }
   dropFeatures() {
     for (const c of this._candidates) {
       delete c._features;
