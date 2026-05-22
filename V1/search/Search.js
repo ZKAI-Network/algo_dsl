@@ -19,6 +19,13 @@ export class Search {
   _boost = [];
   /** Set by include()/exclude()/boost(); filters are pushed to whichever array is active. */
   _active_array = null;
+  /**
+   * Per-request hydration spec accumulated via .hydrate(target, spec).
+   * - `undefined`           → omit `hydrate` from payload, server applies its per-index defaults
+   * - `{}`                  → server skips hydration entirely (bareHits())
+   * - `{target: spec, ...}` → server uses these targets only (replaces defaults)
+   */
+  _hydrate = undefined;
   lastCall = null;
   lastResult = null;
   constructor(options) {
@@ -73,6 +80,7 @@ export class Search {
     }
     if (this._only_ids) payload.only_ids = true;
     if (Array.isArray(this._select_fields) && this._select_fields.length > 0) payload.select_fields = this._select_fields;
+    if (this._hydrate !== undefined) payload.hydrate = this._hydrate;
     return payload;
   }
   async execute() {
@@ -160,194 +168,7 @@ export class Search {
     this._log(`  took_backend: ${infos.took_backend}`);
     this._log(`  took_sdk: ${infos.took_sdk}`);
     this._log(`  max_score: ${infos.max_score}`);
-    await this._enrichUserTrades(res.hits);
     return res.hits;
-  }
-  /**
-   * Auto-enrich each hit's `_source` with `user_trades` — a 50/50 mix of
-   * "interesting" and "convergence" records normalized to one shape per
-   * family (TRADE for token-items, BET for polymarket/kalshi items). The
-   * `record_type` field is the only discriminator; the rest of the fields
-   * are identical between the two halves so consumers render uniformly.
-   *
-   * Mirrors `ds_search/backend/candidate_generation/utils/user_trades.py`.
-   * Both layers compute the same shape so callers see consistent data
-   * whether they go through the SDK or hit /search/* directly.
-   *
-   * Failures degrade silently: on any HTTP/network error the hits are
-   * still returned (with user_trades absent or partial) and a log line
-   * is emitted via the SDK's log callback.
-   */
-  async _enrichUserTrades(hits) {
-    if (!Array.isArray(hits) || hits.length === 0) return;
-    const index = (this._index || '').trim();
-    const conf = this._userTradesConf(index);
-    if (!conf) return; // unsupported index — no-op
-
-    const { engine, infosKey, limitKey, lookupKey, family, convStrategy } = conf;
-    const params = { [limitKey]: 15 };
-    const rowKeyByHitIdx = new Array(hits.length).fill(null);
-    const chainAddrByHitIdx = new Array(hits.length).fill(null);
-    if (lookupKey === 'id') {
-      const itemIds = [];
-      for (let i = 0; i < hits.length; i++) {
-        const h = hits[i];
-        if (h && typeof h._id === 'string' && h._id) {
-          itemIds.push(h._id);
-          rowKeyByHitIdx[i] = h._id;
-        }
-      }
-      if (itemIds.length === 0) return;
-      params.item_ids = itemIds;
-    } else if (lookupKey === 'chain_address') {
-      const tokens = [];
-      for (let i = 0; i < hits.length; i++) {
-        const h = hits[i];
-        const src = (h && h._source) || {};
-        const chain = String(src.chain || '').trim().toLowerCase();
-        const addr = String(src.token_address || '').trim().toLowerCase();
-        if (chain && addr) {
-          tokens.push({ chain, address: addr });
-          rowKeyByHitIdx[i] = `TOKEN#${chain}#${addr}#METADATA`;
-          chainAddrByHitIdx[i] = [chain, addr];
-        }
-      }
-      if (tokens.length === 0) return;
-      params.tokens = tokens;
-    } else {
-      return;
-    }
-
-    const t0 = performance.now();
-    const data = await this._postStories(engine, params);
-    if (!data) return;
-    const infos = (data && data[infosKey]) || {};
-
-    let notificationsByToken = new Map();
-    if (family === 'trade' && convStrategy === 'dex_es') {
-      const uniqueAddrs = new Set();
-      for (const ca of chainAddrByHitIdx) {
-        if (ca) uniqueAddrs.add(ca[1]);
-      }
-      notificationsByToken = await this._fetchDexNotificationsFor(
-        Array.from(uniqueAddrs),
-        15,
-      );
-    }
-
-    let attached = 0;
-    for (let i = 0; i < hits.length; i++) {
-      const h = hits[i];
-      if (!h || typeof h !== 'object') continue;
-      if (!h._source || typeof h._source !== 'object') h._source = {};
-      const info = infos[rowKeyByHitIdx[i]] || {};
-      let mixed;
-      if (family === 'bet') {
-        const rawBets = Array.isArray(info.bets) ? info.bets : [];
-        const rawCbets = Array.isArray(info.convergence_bets) ? info.convergence_bets : [];
-        const interesting = rawBets.map((b) => mapInterestingBet(b));
-        const convergence = rawCbets
-          .map((cb) => mapConvergenceBet(cb, rowKeyByHitIdx[i]))
-          .filter((x) => x);
-        mixed = mix5050(interesting, convergence, 15);
-      } else {
-        const rawTrades = Array.isArray(info.interesting_trades)
-          ? info.interesting_trades
-          : [];
-        const interesting = rawTrades.map((t) => mapInterestingTrade(t));
-        let convergence = [];
-        if (convStrategy === 'dex_es') {
-          const ca = chainAddrByHitIdx[i];
-          const rawNotifs = ca ? notificationsByToken.get(`${ca[0]}::${ca[1]}`) || [] : [];
-          convergence = rawNotifs.map((n) => mapConvergenceTrade(n)).filter((x) => x);
-        } else if (convStrategy === 'bt') {
-          const rawConv = Array.isArray(info.convergence_trades) ? info.convergence_trades : [];
-          convergence = rawConv
-            .map((t) => mapHlConvergenceTrade(t, rowKeyByHitIdx[i]))
-            .filter((x) => x);
-        }
-        mixed = mix5050(interesting, convergence, 15);
-      }
-      h._source.user_trades = mixed;
-      if (mixed.length > 0) attached++;
-    }
-    const ms = Math.round(performance.now() - t0);
-    this._log(`user_trades enriched ${attached}/${hits.length} hits via ${engine} (family=${family}) in ${ms}ms`);
-  }
-
-  _userTradesConf(index) {
-    if (index.startsWith('polymarket-items')) {
-      return { engine: 'polymarket_v3', infosKey: 'market_infos', limitKey: 'bet_limit', lookupKey: 'id', family: 'bet', convStrategy: 'bt' };
-    }
-    if (index.startsWith('kalshi-items')) {
-      return { engine: 'kalshi_v1', infosKey: 'market_infos', limitKey: 'bet_limit', lookupKey: 'id', family: 'bet', convStrategy: 'none' };
-    }
-    if (index.startsWith('token-items')) {
-      return { engine: 'token_items_v1', infosKey: 'item_infos', limitKey: 'trade_limit', lookupKey: 'chain_address', family: 'trade', convStrategy: 'dex_es' };
-    }
-    if (index.startsWith('hyperliquid-items')) {
-      return { engine: 'hyperliquid_items_v1', infosKey: 'item_infos', limitKey: 'trade_limit', lookupKey: 'id', family: 'trade', convStrategy: 'bt' };
-    }
-    return null;
-  }
-
-  async _postStories(engine, params) {
-    const url = `${this._storiesUrl}/stories/generate`;
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this._apiKey}` },
-        body: JSON.stringify({ engine, params }),
-      });
-      if (!response.ok) {
-        const text = await response.text().catch(() => '');
-        this._log(`user_trades stories call skipped (HTTP ${response.status}): ${text.slice(0, 200)}`);
-        return null;
-      }
-      return await response.json();
-    } catch (err) {
-      this._log(`user_trades stories call failed: ${err && err.message ? err.message : err}`);
-      return null;
-    }
-  }
-
-  async _fetchDexNotificationsFor(addresses, perTokenLimit) {
-    const out = new Map();
-    if (!addresses || addresses.length === 0) return out;
-    try {
-      const payload = {
-        index: 'alpha-notifications-dex',
-        origin: this._origin,
-        feed_type: 'filter_and_sort',
-        size: 100 * perTokenLimit,
-        include: [{ filter: 'terms', field: 'token_address', value: addresses }],
-        exclude: [],
-        sort_by: { field: 'timestamp', order: 'desc' },
-      };
-      const response = await fetch(`${this._url}/search/filter_and_sort`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this._apiKey}` },
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) return out;
-      const data = await response.json();
-      const hits = (data?.result?.hits) || [];
-      for (const h of hits) {
-        const src = h?._source || {};
-        const chain = String(src.chain || '').toLowerCase();
-        const addr = String(src.token_address || '').toLowerCase();
-        if (!chain || !addr) continue;
-        const key = `${chain}::${addr}`;
-        const bucket = out.get(key) || [];
-        if (bucket.length < perTokenLimit) {
-          bucket.push(src);
-          out.set(key, bucket);
-        }
-      }
-    } catch (err) {
-      this._log(`user_trades dex-notifications query failed: ${err && err.message ? err.message : err}`);
-    }
-    return out;
   }
   async frequentValues(field, size = 25) {
     if (!this._index || typeof this._index !== 'string' || !this._index.trim()) {
@@ -473,6 +294,44 @@ export class Search {
     this._sort_by = { field: field.trim(), order: direction };
     return this;
   }
+  /**
+   * Configure server-side hydration of one target on each hit, e.g.
+   *   .hydrate('_source.user_trades', { limit: 15, sources: [
+   *     { plugin: 'polymarket_interesting_bets', share: 0.5 },
+   *     { plugin: 'polymarket_convergence_bets', share: 0.5 },
+   *   ]})
+   *
+   * Calling .hydrate() at all replaces the per-index server defaults — only
+   * the explicit targets you configure are populated. Call .unhydrate(target)
+   * to remove a previously-set target, or .bareHits() to skip hydration
+   * entirely for this call.
+   */
+  hydrate(target, spec) {
+    if (typeof target !== 'string' || !target.startsWith('_source.')) {
+      throw new Error('Search.hydrate: target must start with "_source." (e.g. "_source.user_trades")');
+    }
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+      throw new Error('Search.hydrate: spec must be a plain object');
+    }
+    if (!Array.isArray(spec.sources) || spec.sources.length === 0) {
+      throw new Error('Search.hydrate: spec.sources must be a non-empty array');
+    }
+    if (this._hydrate === undefined || this._hydrate === null) this._hydrate = {};
+    this._hydrate[target] = spec;
+    return this;
+  }
+  /** Remove a previously-set hydration target. */
+  unhydrate(target) {
+    if (this._hydrate && typeof this._hydrate === 'object') {
+      delete this._hydrate[target];
+    }
+    return this;
+  }
+  /** Skip server-side hydration entirely for this call. */
+  bareHits() {
+    this._hydrate = {};
+    return this;
+  }
   include() {
     this._active_array = this._include;
     return this;
@@ -583,106 +442,3 @@ export class Search {
   }
 }
 
-
-// --- user_trades helpers (canonical schemas, mix algorithm) ----------------
-function isoToEpochS(s) {
-  if (typeof s !== 'string' || !s) return null;
-  const t = Date.parse(s);
-  if (Number.isNaN(t)) return null;
-  return Math.floor(t / 1000);
-}
-
-function mapInterestingTrade(t) {
-  if (!t || typeof t !== 'object') return null;
-  return { ...t, record_type: 'interesting_trade' };
-}
-
-function mapConvergenceTrade(n) {
-  if (!n || typeof n !== 'object') return null;
-  const notifType = String(n.notification_type || '').toLowerCase();
-  const direction = notifType.includes('sell') ? 'sell' : 'buy';
-  const ts = n.timestamp || n.created_at;
-  let epoch = null;
-  if (typeof ts === 'string') epoch = isoToEpochS(ts);
-  else if (typeof ts === 'number') epoch = Math.floor(ts);
-  const wallets = Array.isArray(n.trader_wallets) ? n.trader_wallets : [];
-  return {
-    record_type: 'convergence_trade',
-    amount_usd: n.total_usd_inflow ?? null,
-    block_timestamp: epoch,
-    chain: n.chain ?? null,
-    direction,
-    project: n.cta_action ?? null,
-    protocol: n.signal_type ?? null,
-    token_address: n.token_address ?? null,
-    tx_hash: null,
-    wallet_24h_volume_usd: null,
-    wallet_address: wallets[0] ?? null,
-  };
-}
-
-function mapInterestingBet(b) {
-  if (!b || typeof b !== 'object') return null;
-  return { ...b, record_type: 'interesting_bet' };
-}
-
-function mapHlConvergenceTrade(ct, marketId) {
-  if (!ct || typeof ct !== 'object') return null;
-  const tokenAddress = (typeof marketId === 'string' && marketId)
-    ? marketId.split(':').pop()
-    : null;
-  const direction = (ct.direction || '').toString().toLowerCase() || null;
-  return {
-    record_type: 'convergence_trade',
-    amount_usd: ct.trade_size_usd ?? null,
-    block_timestamp: isoToEpochS(ct.traded_at),
-    chain: 'hyperliquid',
-    direction,
-    project: 'hyperliquid',
-    protocol: 'convergence',
-    token_address: tokenAddress,
-    tx_hash: ct.tx_hash ?? null,
-    wallet_24h_volume_usd: null,
-    wallet_address: ct.wallet ?? null,
-  };
-}
-
-function mapConvergenceBet(cb, marketId) {
-  if (!cb || typeof cb !== 'object') return null;
-  return {
-    record_type: 'convergence_bet',
-    event: 'TRADE',
-    id: cb.signal_id ?? null,
-    item_id: marketId ?? null,
-    outcome: cb.outcome_label ?? null,
-    price: null,
-    shares: null,
-    side: cb.direction ?? null,
-    timestamp: cb.traded_at ?? null,
-    usdc: cb.size_usd ?? null,
-    user_id: cb.wallet ?? null,
-    user_name: null,
-    user_pfp: null,
-    user_pseudonym: null,
-    user_pnl: cb.realized_pnl_usd ?? null,
-    user_volume: null,
-  };
-}
-
-function mix5050(interesting, convergence, limit) {
-  const half = Math.floor(limit / 2);
-  const odd = limit - 2 * half;
-  let takeI = Math.min(interesting.length, half + odd);
-  let takeC = Math.min(convergence.length, half);
-  let deficit = limit - takeI - takeC;
-  if (deficit > 0) {
-    const extra = Math.min(deficit, interesting.length - takeI);
-    takeI += extra;
-    deficit -= extra;
-  }
-  if (deficit > 0) {
-    const extra = Math.min(deficit, convergence.length - takeC);
-    takeC += extra;
-  }
-  return interesting.slice(0, takeI).concat(convergence.slice(0, takeC));
-}

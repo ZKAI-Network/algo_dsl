@@ -59,6 +59,39 @@ export interface FrequentValueItem {
 
 export type FrequentValuesResult = FrequentValueItem[];
 
+// --- Hydration ---
+
+export interface HydrationShare {
+  plugin: string;
+  share?: number;
+  params?: Record<string, unknown>;
+}
+
+export interface HydrationSpec {
+  sources: HydrationShare[];
+  limit?: number;
+  family?: string;
+  merge?: 'mix' | 'pick_one' | 'replace';
+  sort_key?: string;
+  dedupe_key?: string;
+}
+
+export type HydrationBlock = Record<string, HydrationSpec>;
+
+export interface HydrationPluginDescriptor {
+  name: string;
+  family: string;
+  target_type: 'scalar' | 'dict' | 'list' | 'record';
+  applicable_indexes: string[];
+  source: string;
+  lookup: { kind: string; source_field: string | null };
+  sort_key: string | null;
+  dedupe_key: string | null;
+  max_cap: number;
+  requires_params: string[];
+  description: string;
+}
+
 export class Search {
   lastCall: { endpoint: string; payload: unknown } | null;
   lastResult: unknown;
@@ -72,6 +105,9 @@ export class Search {
   vector(vector: number[]): this;
   esQuery(rawQuery: Record<string, unknown>): this;
   sortBy(field: string, direction?: 'asc' | 'desc', field2?: string, direction2?: 'asc' | 'desc'): this;
+  hydrate(target: string, spec: HydrationSpec): this;
+  unhydrate(target: string): this;
+  bareHits(): this;
   include(): this;
   exclude(): this;
   boost(): this;
@@ -214,6 +250,9 @@ export class Studio {
   log(string: string): void;
   show(results?: SearchHit[]): void;
   getFeed(): SearchHit[];
+  hydrate(hits: SearchHit[], spec: HydrationBlock): Promise<SearchHit[]>;
+  hydrationPlugins(): Promise<HydrationPluginDescriptor[]>;
+  hydrationDefaults(index: string): Promise<HydrationBlock>;
 }
 
 // --- Main export ---
