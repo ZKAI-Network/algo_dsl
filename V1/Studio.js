@@ -3,6 +3,7 @@ import { Search } from './search/Search.js';
 import { Features, sortAvailableFeatures } from './features/Features.js';
 import { Scoring } from './scoring/Scoring.js';
 import { Ranking } from './ranking/Ranking.js';
+import { Hydration } from './hydration/Hydration.js';
 import { findIndex } from './utils/indexUtils.js';
 
 /** Main client: search, features, scoring, ranking. Use addCandidates() then addFeatures/addScores/addRanking to enrich. */
@@ -158,59 +159,74 @@ export class Studio {
   getFeed() {
     return this._candidates;
   }
-  /**
-   * Hydrate one or more targets on a caller-supplied list of hits via the
-   * server's /hydration/run endpoint. Mutates `hits` in place and returns
-   * the same array for chaining.
+  /** Hydration as a first-class pipeline stage.
+   *
+   * Returns a Hydration builder pre-filled with the current candidates'
+   * index and item_ids. Override either via `.index(name)` / `.itemIds([…])`
+   * for standalone use.
    *
    * Example:
-   *   await mbd.hydrate(hits, {
-   *     '_source.user_trades': { limit: 15, sources: [
-   *       { plugin: 'polymarket_interesting_bets', share: 0.5 },
-   *       { plugin: 'polymarket_convergence_bets', share: 0.5 },
-   *     ] },
-   *   });
+   *   const h = await mbd.hydration()
+   *     .target('user_trades', { sources: [{ plugin: 'polymarket_convergence_bets' }], limit: 15 })
+   *     .execute();
+   *   mbd.addHydration(h);
    */
-  async hydrate(hits, spec) {
-    if (!Array.isArray(hits) || hits.length === 0) return hits;
-    if (!spec || typeof spec !== 'object') {
-      throw new Error('Studio.hydrate: spec object is required');
-    }
-    const index = hits[0]?._index;
-    if (typeof index !== 'string' || !index) {
-      throw new Error('Studio.hydrate: hits[0]._index must be a non-empty string');
-    }
-    const url = `${this._config.searchService.replace(/\/$/, '')}/hydration/run`;
-    const body = JSON.stringify({ index, hits, hydrate: spec });
-    const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    let response;
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this._config.apiKey}` },
-        body,
-      });
-    } catch (err) {
-      this._log(`Studio.hydrate fetch failed: ${err && err.message ? err.message : err}`);
-      return hits;
-    }
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      this._log(`Studio.hydrate HTTP ${response.status}: ${text.slice(0, 200)}`);
-      return hits;
-    }
-    const data = await response.json().catch(() => null);
-    if (!data || !Array.isArray(data.hits)) return hits;
-    // Server returns the same hits with merged _source — overwrite in place.
-    for (let i = 0; i < hits.length; i++) {
-      const updated = data.hits[i];
-      if (updated && updated._source && typeof updated._source === 'object') {
-        Object.assign(hits[i]._source || (hits[i]._source = {}), updated._source);
+  hydration() {
+    const index = this._candidates?.[0]?._index ?? null;
+    const itemIds = (this._candidates || [])
+      .map((c) => (c && c._id != null ? String(c._id) : null))
+      .filter(Boolean);
+    return new Hydration({
+      url: this._config.searchService,
+      apiKey: this._config.apiKey,
+      log: this._log,
+      show: this._show,
+      origin: this._origin,
+      index,
+      itemIds,
+    });
+  }
+  /** Merge a hydration result onto the current candidates.
+   *
+   * Walks `result.metadata[index][item_id]` and writes each `<target>`
+   * onto `hit._source.metadata.<target>` AND (during the 0.5.x release)
+   * the legacy `hit._source.<target>`.
+   */
+  addHydration(hydrationResult) {
+    if (!hydrationResult || typeof hydrationResult !== 'object') return;
+    const metadata = hydrationResult.metadata;
+    if (!metadata || typeof metadata !== 'object') return;
+    // Flatten metadata[index][id] into a single id → entry map so we don't
+    // care which canonical index the server emitted (alias collapse).
+    const byId = {};
+    for (const idx of Object.keys(metadata)) {
+      const inner = metadata[idx] || {};
+      for (const id of Object.keys(inner)) {
+        byId[String(id)] = inner[id] || {};
       }
     }
-    const ms = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - t0);
-    this._log(`hydrate: ${hits.length} hits, targets=${Object.keys(spec).join(',')}, ${ms}ms`);
-    return hits;
+    for (const hit of this._candidates || []) {
+      if (!hit || typeof hit !== 'object') continue;
+      const id = hit._id != null ? String(hit._id) : null;
+      const entry = id ? byId[id] : null;
+      if (!entry) continue;
+      let src = hit._source;
+      if (!src || typeof src !== 'object') {
+        src = {};
+        hit._source = src;
+      }
+      let meta = src.metadata;
+      if (!meta || typeof meta !== 'object') {
+        meta = {};
+        src.metadata = meta;
+      }
+      for (const target of Object.keys(entry)) {
+        const value = entry[target];
+        meta[target] = value;
+        // Dual-write to legacy path during the 0.5.x release.
+        src[target] = value;
+      }
+    }
   }
   /** GET /hydration/plugins — registered plugin catalogue. */
   async hydrationPlugins() {
