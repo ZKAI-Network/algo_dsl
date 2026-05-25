@@ -162,8 +162,8 @@ export class Studio {
   /** Hydration as a first-class pipeline stage.
    *
    * Returns a Hydration builder pre-filled with the current candidates'
-   * index and item_ids. Override either via `.index(name)` / `.itemIds([…])`
-   * for standalone use.
+   * index and hits. Override via `.hits([...])` (or `.itemIds([...])` for
+   * the synthetic-hit shortcut) for standalone use.
    *
    * Example:
    *   const h = await mbd.hydration()
@@ -173,9 +173,6 @@ export class Studio {
    */
   hydration() {
     const index = this._candidates?.[0]?._index ?? null;
-    const itemIds = (this._candidates || [])
-      .map((c) => (c && c._id != null ? String(c._id) : null))
-      .filter(Boolean);
     return new Hydration({
       url: this._config.searchService,
       apiKey: this._config.apiKey,
@@ -183,27 +180,55 @@ export class Studio {
       show: this._show,
       origin: this._origin,
       index,
-      itemIds,
+      hits: this._candidates || [],
     });
   }
   /** Merge a hydration result onto the current candidates.
    *
-   * Walks `result.metadata[index][item_id]` and writes each `<target>`
-   * onto `hit._source.metadata.<target>` AND (during the 0.5.x release)
-   * the legacy `hit._source.<target>`.
+   * The server returns the same hits the SDK posted, with
+   * `_source.metadata.<target>` written in place. We walk the response
+   * hits by id and overwrite each matching candidate's `_source` (so the
+   * mutation lands; foreign top-level fields like `_features` / `_scores`
+   * on the candidate are preserved by the server). When the server
+   * filtered hits via `drop_empty_hits`, the candidate list shrinks to
+   * match.
    */
   addHydration(hydrationResult) {
     if (!hydrationResult || typeof hydrationResult !== 'object') return;
+    const returnedHits = Array.isArray(hydrationResult.hits) ? hydrationResult.hits : null;
+
+    if (returnedHits) {
+      const byId = {};
+      for (const h of returnedHits) {
+        if (h && typeof h === 'object' && h._id != null) {
+          byId[String(h._id)] = h;
+        }
+      }
+      const nextCandidates = [];
+      for (const hit of this._candidates || []) {
+        if (!hit || typeof hit !== 'object') continue;
+        const id = hit._id != null ? String(hit._id) : null;
+        const updated = id ? byId[id] : null;
+        if (!updated) {
+          // Server dropped this hit (drop_empty_hits) — drop locally too.
+          continue;
+        }
+        if (updated._source && typeof updated._source === 'object') {
+          hit._source = updated._source;
+        }
+        nextCandidates.push(hit);
+      }
+      this._candidates = nextCandidates;
+      return;
+    }
+
+    // Fallback: caller passed an item_ids-shape result (metadata dict).
     const metadata = hydrationResult.metadata;
     if (!metadata || typeof metadata !== 'object') return;
-    // Flatten metadata[index][id] into a single id → entry map so we don't
-    // care which canonical index the server emitted (alias collapse).
     const byId = {};
     for (const idx of Object.keys(metadata)) {
       const inner = metadata[idx] || {};
-      for (const id of Object.keys(inner)) {
-        byId[String(id)] = inner[id] || {};
-      }
+      for (const id of Object.keys(inner)) byId[String(id)] = inner[id] || {};
     }
     for (const hit of this._candidates || []) {
       if (!hit || typeof hit !== 'object') continue;
@@ -223,7 +248,6 @@ export class Studio {
       for (const target of Object.keys(entry)) {
         const value = entry[target];
         meta[target] = value;
-        // Dual-write to legacy path during the 0.5.x release.
         src[target] = value;
       }
     }
