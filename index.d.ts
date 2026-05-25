@@ -68,13 +68,21 @@ export interface HydrationShare {
 }
 
 export interface HydrationSpec {
-  sources: HydrationShare[];
+  /** Optional — when omitted the server resolves backing plugins via the
+   * target's preset registry (the recommended user-facing path). */
+  sources?: HydrationShare[];
   limit?: number;
   family?: string;
   merge?: 'mix' | 'pick_one' | 'replace';
   sort_key?: string;
   dedupe_key?: string;
   drop_empty?: boolean;
+}
+
+export interface HydrationTargetDescriptor {
+  name: string;
+  family: string | null;
+  plugin_count: number;
 }
 
 export type HydrationBlock = Record<string, HydrationSpec>;
@@ -301,6 +309,7 @@ export class Studio {
   getFeed(): SearchHit[];
   hydration(): Hydration;
   addHydration(result: HydrationResult): void;
+  hydrationTargets(index: string): Promise<HydrationTargetDescriptor[]>;
   hydrationPlugins(): Promise<HydrationPluginDescriptor[]>;
   hydrationDefaults(index: string): Promise<HydrationBlock>;
 }

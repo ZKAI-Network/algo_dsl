@@ -252,7 +252,21 @@ export class Studio {
       }
     }
   }
-  /** GET /hydration/plugins — registered plugin catalogue. */
+  /** GET /hydration/targets/{index} — named target presets for an index.
+   *
+   * The user-facing catalogue: each entry is `{name, family, plugin_count}`.
+   * Pass any of these names to `.target(name, …)`. The server picks the
+   * backing plugins; the caller never sees them.
+   */
+  async hydrationTargets(index) {
+    if (typeof index !== 'string' || !index) throw new Error('hydrationTargets: index required');
+    const url = `${this._config.searchService.replace(/\/$/, '')}/hydration/targets/${encodeURIComponent(index)}`;
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${this._config.apiKey}` } });
+    if (!response.ok) throw new Error(`hydrationTargets HTTP ${response.status}`);
+    const data = await response.json();
+    return data?.targets || [];
+  }
+  /** GET /hydration/plugins — registered plugin catalogue (power-user). */
   async hydrationPlugins() {
     const url = `${this._config.searchService.replace(/\/$/, '')}/hydration/plugins`;
     const response = await fetch(url, { headers: { Authorization: `Bearer ${this._config.apiKey}` } });

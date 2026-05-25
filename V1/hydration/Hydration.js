@@ -79,29 +79,32 @@ export class Hydration {
 
   /** Configure one hydration target. Call multiple times for multiple targets.
    *
-   * spec = {
-   *   sources: [{ plugin: 'name', share?: 1.0, params?: {} }, ...]   // required
-   *   limit?: 15,
-   *   family?: 'BET',
-   *   merge?: 'mix' | 'pick_one' | 'replace',
-   *   sort_key?: 'timestamp',
-   *   dedupe_key?: 'id',
-   *   drop_empty?: false,         // omit target from items where its list is empty
-   * }
+   * The user-facing path is:
+   *   .target('user_trades', { limit: 15, drop_empty: true })
+   * The server resolves which plugins back the target name based on the
+   * current index. Names are bare (e.g. 'user_trades'); the server writes
+   * under `_source.metadata.<name>` (with a legacy dual-write to
+   * `_source.<name>` during 0.5.x).
    *
-   * Names are bare (e.g. 'user_trades'); the server writes under
-   * `_source.metadata.<name>` (and dual-writes `_source.<name>` during the
-   * 0.5.x release for back-compat).
+   * Power-user override — explicit sources are still accepted:
+   *   .target('custom', {
+   *     sources: [{ plugin: '...', share: 1.0 }],
+   *     limit: 10,
+   *     merge: 'mix' | 'pick_one' | 'replace',
+   *     drop_empty: true,
+   *   })
+   * Spec may also omit `spec` entirely; passing `{}` is equivalent to
+   * "use server defaults for this target".
    */
-  target(name, spec) {
+  target(name, spec = {}) {
     if (typeof name !== 'string' || !name.trim()) {
       throw new Error('Hydration.target: name must be a non-empty string');
     }
-    if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+    if (spec === null || typeof spec !== 'object' || Array.isArray(spec)) {
       throw new Error('Hydration.target: spec must be a plain object');
     }
-    if (!Array.isArray(spec.sources) || spec.sources.length === 0) {
-      throw new Error('Hydration.target: spec.sources must be a non-empty array');
+    if (spec.sources !== undefined && !Array.isArray(spec.sources)) {
+      throw new Error('Hydration.target: spec.sources must be an array if provided');
     }
     this._targets[name.trim()] = spec;
     return this;
