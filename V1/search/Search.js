@@ -19,13 +19,6 @@ export class Search {
   _boost = [];
   /** Set by include()/exclude()/boost(); filters are pushed to whichever array is active. */
   _active_array = null;
-  /**
-   * Per-request hydration spec accumulated via .hydrate(target, spec).
-   * - `undefined`           → omit `hydrate` from payload, server applies its per-index defaults
-   * - `{}`                  → server skips hydration entirely (bareHits())
-   * - `{target: spec, ...}` → server uses these targets only (replaces defaults)
-   */
-  _hydrate = undefined;
   lastCall = null;
   lastResult = null;
   constructor(options) {
@@ -80,7 +73,6 @@ export class Search {
     }
     if (this._only_ids) payload.only_ids = true;
     if (Array.isArray(this._select_fields) && this._select_fields.length > 0) payload.select_fields = this._select_fields;
-    if (this._hydrate !== undefined) payload.hydrate = this._hydrate;
     return payload;
   }
   async execute() {
@@ -292,44 +284,6 @@ export class Search {
     if (typeof field !== 'string' || !field.trim()) throw new Error('Search.sortBy: field must be a non-empty string');
     if (direction !== 'asc' && direction !== 'desc') throw new Error('Search.sortBy: direction must be "asc" or "desc"');
     this._sort_by = { field: field.trim(), order: direction };
-    return this;
-  }
-  /**
-   * Configure server-side hydration of one target on each hit, e.g.
-   *   .hydrate('_source.user_trades', { limit: 15, sources: [
-   *     { plugin: 'polymarket_interesting_bets', share: 0.5 },
-   *     { plugin: 'polymarket_convergence_bets', share: 0.5 },
-   *   ]})
-   *
-   * Calling .hydrate() at all replaces the per-index server defaults — only
-   * the explicit targets you configure are populated. Call .unhydrate(target)
-   * to remove a previously-set target, or .bareHits() to skip hydration
-   * entirely for this call.
-   */
-  hydrate(target, spec) {
-    if (typeof target !== 'string' || !target.startsWith('_source.')) {
-      throw new Error('Search.hydrate: target must start with "_source." (e.g. "_source.user_trades")');
-    }
-    if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
-      throw new Error('Search.hydrate: spec must be a plain object');
-    }
-    if (!Array.isArray(spec.sources) || spec.sources.length === 0) {
-      throw new Error('Search.hydrate: spec.sources must be a non-empty array');
-    }
-    if (this._hydrate === undefined || this._hydrate === null) this._hydrate = {};
-    this._hydrate[target] = spec;
-    return this;
-  }
-  /** Remove a previously-set hydration target. */
-  unhydrate(target) {
-    if (this._hydrate && typeof this._hydrate === 'object') {
-      delete this._hydrate[target];
-    }
-    return this;
-  }
-  /** Skip server-side hydration entirely for this call. */
-  bareHits() {
-    this._hydrate = {};
     return this;
   }
   include() {

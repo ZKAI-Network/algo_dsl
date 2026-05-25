@@ -74,9 +74,41 @@ export interface HydrationSpec {
   merge?: 'mix' | 'pick_one' | 'replace';
   sort_key?: string;
   dedupe_key?: string;
+  drop_empty?: boolean;
 }
 
 export type HydrationBlock = Record<string, HydrationSpec>;
+
+export interface HydrationStatsTarget {
+  populated: number;
+  empty: number;
+}
+
+export interface HydrationStats {
+  items_in: number;
+  items_returned: number;
+  targets: Record<string, HydrationStatsTarget>;
+}
+
+export interface HydrationResult {
+  metadata: Record<string, Record<string, Record<string, unknown>>>;
+  stats: HydrationStats;
+  took_backend?: number;
+}
+
+export interface HydrationDescribeTarget {
+  family: string;
+  merge: 'mix' | 'pick_one' | 'replace';
+  limit: number;
+  drop_empty: boolean;
+  fields: string[];
+  example: Record<string, unknown>;
+  sources: Array<{ plugin: string; share: number }>;
+}
+
+export interface HydrationDescribeResult {
+  targets: Record<string, HydrationDescribeTarget>;
+}
 
 export interface HydrationPluginDescriptor {
   name: string;
@@ -92,6 +124,23 @@ export interface HydrationPluginDescriptor {
   description: string;
 }
 
+export class Hydration {
+  lastCall: { endpoint: string; payload: unknown } | null;
+  lastResult: unknown;
+
+  index(name: string): this;
+  itemIds(ids: string[]): this;
+  target(name: string, spec: HydrationSpec): this;
+  clearTarget(name: string): this;
+  clearTargets(): this;
+  dropEmptyHits(value?: boolean): this;
+  execute(): Promise<HydrationResult>;
+  describe(): Promise<HydrationDescribeResult>;
+  preview(itemId?: string): Promise<HydrationResult>;
+  log(string: string): void;
+  show(results?: unknown): void;
+}
+
 export class Search {
   lastCall: { endpoint: string; payload: unknown } | null;
   lastResult: unknown;
@@ -105,9 +154,6 @@ export class Search {
   vector(vector: number[]): this;
   esQuery(rawQuery: Record<string, unknown>): this;
   sortBy(field: string, direction?: 'asc' | 'desc', field2?: string, direction2?: 'asc' | 'desc'): this;
-  hydrate(target: string, spec: HydrationSpec): this;
-  unhydrate(target: string): this;
-  bareHits(): this;
   include(): this;
   exclude(): this;
   boost(): this;
@@ -250,7 +296,8 @@ export class Studio {
   log(string: string): void;
   show(results?: SearchHit[]): void;
   getFeed(): SearchHit[];
-  hydrate(hits: SearchHit[], spec: HydrationBlock): Promise<SearchHit[]>;
+  hydration(): Hydration;
+  addHydration(result: HydrationResult): void;
   hydrationPlugins(): Promise<HydrationPluginDescriptor[]>;
   hydrationDefaults(index: string): Promise<HydrationBlock>;
 }
