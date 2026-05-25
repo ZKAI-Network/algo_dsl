@@ -246,9 +246,7 @@ export class Studio {
         src.metadata = meta;
       }
       for (const target of Object.keys(entry)) {
-        const value = entry[target];
-        meta[target] = value;
-        src[target] = value;
+        meta[target] = entry[target];
       }
     }
   }
