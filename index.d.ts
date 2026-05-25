@@ -91,7 +91,9 @@ export interface HydrationStats {
 }
 
 export interface HydrationResult {
-  metadata: Record<string, Record<string, Record<string, unknown>>>;
+  // Either `hits` (when posting full hits) or `metadata` (when posting item_ids).
+  hits?: SearchHit[];
+  metadata?: Record<string, Record<string, Record<string, unknown>>>;
   stats: HydrationStats;
   took_backend?: number;
 }
@@ -129,6 +131,7 @@ export class Hydration {
   lastResult: unknown;
 
   index(name: string): this;
+  hits(arr: SearchHit[]): this;
   itemIds(ids: string[]): this;
   target(name: string, spec: HydrationSpec): this;
   clearTarget(name: string): this;

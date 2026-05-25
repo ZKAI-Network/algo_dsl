@@ -1,6 +1,6 @@
 /** Hydration builder: per-hit metadata I/O as a first-class pipeline stage.
  *
- * Use:
+ * Use (pipeline mode):
  *   const out = await mbd.hydration()
  *     .target('user_trades', { sources: [{ plugin: 'polymarket_convergence_bets' }], limit: 10 })
  *     .execute();
@@ -9,13 +9,19 @@
  * Or standalone (no candidates needed):
  *   const out = await mbd.hydration()
  *     .index('polymarket-items')
- *     .itemIds(['1706788'])
+ *     .hits([{ _id: '1706788', _source: { item_id: '1706788' } }])
  *     .target('user_trades', { sources: [{ plugin: 'polymarket_convergence_bets' }] })
  *     .execute();
+ *
+ * The builder posts the **full hits** to the server. The server looks up
+ * each hit's `_source.item_id` (falling back to `_id`), runs the configured
+ * plugins, and writes the result onto `_source.metadata.<target>` (and
+ * legacy `_source.<target>` during the 0.5.x dual-write window). Foreign
+ * fields on the hit (e.g. `_features`, `_scores`) are preserved.
  */
 export class Hydration {
   _index = null;
-  _itemIds = [];
+  _hits = [];
   _targets = {};
   _dropEmptyHits = false;
   lastCall = null;
@@ -25,7 +31,7 @@ export class Hydration {
     if (!options || typeof options !== 'object') {
       throw new Error('Hydration: options object is required');
     }
-    const { url, apiKey, index = null, itemIds = [], origin = 'sdk', log, show } = options;
+    const { url, apiKey, index = null, hits = [], origin = 'sdk', log, show } = options;
     if (typeof url !== 'string' || !url.trim()) {
       throw new Error('Hydration: options.url is required and must be a non-empty string');
     }
@@ -35,7 +41,7 @@ export class Hydration {
     this._url = url.trim().replace(/\/$/, '');
     this._apiKey = apiKey.trim();
     this._index = typeof index === 'string' && index.trim() ? index.trim() : null;
-    this._itemIds = Array.isArray(itemIds) ? itemIds.filter((x) => typeof x === 'string' && x) : [];
+    this._hits = Array.isArray(hits) ? hits.filter((h) => h && typeof h === 'object') : [];
     this._origin = typeof origin === 'string' && origin.trim() ? origin.trim() : 'sdk';
     this._log = typeof log === 'function' ? log : console.log.bind(console);
     this._show = typeof show === 'function' ? show : console.log.bind(console);
@@ -50,12 +56,24 @@ export class Hydration {
     return this;
   }
 
-  /** Override the item_ids (default: pulled from candidates by Studio). */
+  /** Override the input hits (default: pulled from candidates by Studio). */
+  hits(arr) {
+    if (!Array.isArray(arr)) {
+      throw new Error('Hydration.hits: argument must be an array of hit objects');
+    }
+    this._hits = arr.filter((h) => h && typeof h === 'object');
+    return this;
+  }
+
+  /** Convenience: build minimal hits from a list of item_ids. Useful when the
+   * caller only has ids on hand (e.g. a curated debug list). */
   itemIds(ids) {
     if (!Array.isArray(ids)) {
       throw new Error('Hydration.itemIds: ids must be an array of strings');
     }
-    this._itemIds = ids.filter((x) => typeof x === 'string' && x);
+    this._hits = ids
+      .filter((x) => typeof x === 'string' && x)
+      .map((id) => ({ _index: this._index, _id: id, _source: { item_id: id } }));
     return this;
   }
 
@@ -112,7 +130,7 @@ export class Hydration {
     const payload = {
       origin: this._origin,
       index: this._index,
-      item_ids: this._itemIds,
+      hits: this._hits,
     };
     if (Object.keys(this._targets).length > 0) {
       payload.hydrate = this._targets;
@@ -148,17 +166,21 @@ export class Hydration {
     return result;
   }
 
-  /** Run hydration. POSTs `/hydration/run` and returns the nested metadata
-   * dict (with stats). The caller hands this to `mbd.addHydration(result)`. */
+  /** Run hydration. POSTs `/hydration/run` with the configured hits and
+   * returns `{hits, stats, took_backend, took_sdk}`. Each returned hit has
+   * `_source.metadata.<target>` populated (and legacy `_source.<target>`
+   * during the 0.5.x dual-write window). The caller hands this to
+   * `mbd.addHydration(result)` which merges the returned hits onto
+   * candidates by id. */
   async execute() {
     if (!this._index) {
       throw new Error(
         'Hydration.execute: index must be set (call mbd.hydration() after addCandidates, or .index(name) explicitly)'
       );
     }
-    if (!Array.isArray(this._itemIds) || this._itemIds.length === 0) {
+    if (!Array.isArray(this._hits) || this._hits.length === 0) {
       throw new Error(
-        'Hydration.execute: itemIds is empty (call mbd.hydration() after addCandidates, or .itemIds([...]) explicitly)'
+        'Hydration.execute: hits is empty (call mbd.hydration() after addCandidates, or .hits([...]) / .itemIds([...]) explicitly)'
       );
     }
     const endpoint = '/hydration/run';
@@ -198,14 +220,16 @@ export class Hydration {
   /** Preview — POST `/hydration/preview` with a single item_id and return
    * the populated entry. Useful for "show me real data for one item". */
   async preview(itemId) {
-    const oneId = typeof itemId === 'string' && itemId.trim()
-      ? itemId.trim()
-      : this._itemIds[0];
+    let oneId = typeof itemId === 'string' && itemId.trim() ? itemId.trim() : null;
+    if (!oneId && this._hits.length > 0) {
+      const h = this._hits[0];
+      oneId = (h._source && h._source.item_id) || h._id || null;
+    }
     if (!this._index) {
       throw new Error('Hydration.preview: index must be set');
     }
     if (!oneId) {
-      throw new Error('Hydration.preview: pass an itemId or call .itemIds([...]) first');
+      throw new Error('Hydration.preview: pass an itemId or call .hits([...]) first');
     }
     const endpoint = '/hydration/preview';
     const body = {
