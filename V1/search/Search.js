@@ -2,8 +2,15 @@ import {
   Filter, TermFilter, TermsFilter, NumericFilter, MatchFilter, GeoFilter, DateFilter,
   IsNullFilter, NotNullFilter, CustomFilter, GroupBoostFilter, TermsLookupFilter, ConsoleAccountFilter,
 } from './filters/index.js';
+import { matchFilters } from '../notification/match.js';
 
-/** Search builder: index(), include()/exclude()/boost(), filters, execute(). Call include/exclude/boost before adding filters. */
+/** Search builder: index(), include()/exclude()/boost(), filters, execute().
+ *
+ * v0.6 — match mode. When the parent StudioConfig has mode='match', execute()
+ * captures the spec into config.captures.searches and returns either the
+ * injected candidate (wrapped as a 1-element hits array) if it passes the
+ * registered filters, or an empty array. No network call.
+ */
 export class Search {
   _index = null;
   _es_query = null;
@@ -17,7 +24,6 @@ export class Search {
   _include = [];
   _exclude = [];
   _boost = [];
-  /** Set by include()/exclude()/boost(); filters are pushed to whichever array is active. */
   _active_array = null;
   lastCall = null;
   lastResult = null;
@@ -25,7 +31,7 @@ export class Search {
     if (!options || typeof options !== 'object') {
       throw new Error('Search: options object is required');
     }
-    const { url, storiesUrl, apiKey, origin = 'sdk', log, show } = options;
+    const { url, storiesUrl, apiKey, origin = 'sdk', log, show, mode, captures } = options;
     if (typeof url !== 'string' || !url.trim()) {
       throw new Error('Search: options.url is required and must be a non-empty string');
     }
@@ -40,8 +46,9 @@ export class Search {
     this._origin = typeof origin === 'string' && origin.trim() ? origin.trim() : 'sdk';
     this._log = typeof log === 'function' ? log : console.log.bind(console);
     this._show = typeof show === 'function' ? show : console.log.bind(console);
+    this._mode = mode === 'match' ? 'match' : 'normal';
+    this._captures = captures || null;
   }
-  /** Endpoint selection: es_query > semantic (text/vector) > boost > filter_and_sort. */
   getEndpoint() {
     if (this._es_query != null) return '/search/es_query';
     const hasTextOrVector = (typeof this._text === 'string' && this._text.length > 0) || (Array.isArray(this._vector) && this._vector.length > 0);
@@ -75,9 +82,35 @@ export class Search {
     if (Array.isArray(this._select_fields) && this._select_fields.length > 0) payload.select_fields = this._select_fields;
     return payload;
   }
+  /** Snapshot the filters registered on this Search instance (no network). */
+  getFilters() {
+    return {
+      index: this._index,
+      include: this._include.map((f) => ({ ...f })),
+      exclude: this._exclude.map((f) => ({ ...f })),
+      boost: this._boost.map((f) => ({ ...f })),
+    };
+  }
   async execute() {
     if (!this._index || typeof this._index !== 'string' || !this._index.trim()) {
       throw new Error('Search.execute: index must be set (call index(name) first)');
+    }
+    if (this._mode === 'match') {
+      const snap = this.getFilters();
+      if (this._captures) this._captures.searches.push(snap);
+      const candidate = this._captures?.injectedCandidate;
+      if (!candidate) return [];
+      const doc = candidate._source && typeof candidate._source === 'object'
+        ? { ...candidate, ...candidate._source }
+        : candidate;
+      const passed = matchFilters(doc, snap);
+      if (!passed) return [];
+      const hit = candidate._id != null
+        ? { _index: this._index, _id: String(candidate._id), _source: candidate._source || candidate }
+        : { _index: this._index, _id: String(candidate.signal_id || candidate.id || 'candidate'), _source: candidate };
+      this.lastCall = { endpoint: 'match-mode', payload: snap };
+      this.lastResult = { hits: [hit] };
+      return [hit];
     }
     if (this._es_query != null && (typeof this._es_query !== 'object' || Array.isArray(this._es_query))) {
       throw new Error('Search.execute: esQuery() must be called with a plain object (e.g. { query: {...}, sort: [...] })');
@@ -87,33 +120,23 @@ export class Search {
     const hasIncludeVector = this._include_vector === true;
     const exclusiveCount = (hasOnlyIds ? 1 : 0) + (hasSelectFields ? 1 : 0) + (hasIncludeVector ? 1 : 0);
     if (exclusiveCount > 1) {
-      throw new Error(
-        'Search: onlyIds, selectFields, and includeVectors are mutually exclusive; only one may be set at a time.'
-      );
+      throw new Error('Search: onlyIds, selectFields, and includeVectors are mutually exclusive; only one may be set at a time.');
     }
     const endpoint = this.getEndpoint();
     if (endpoint === '/search/es_query') {
       if (this._include.length > 0 || this._exclude.length > 0 || this._boost.length > 0) {
-        throw new Error(
-          'Search: esQuery() does not support include(), exclude(), or boost() filters. Add filters directly in your Elasticsearch query.'
-        );
+        throw new Error('Search: esQuery() does not support include(), exclude(), or boost() filters. Add filters directly in your Elasticsearch query.');
       }
     } else if (endpoint === '/search/semantic') {
       if (this._include.length > 0 || this._exclude.length > 0 || this._boost.length > 0) {
-        throw new Error(
-          'Search: semantic search does not support include(), exclude(), or boost() filters. Use filter_and_sort or boost endpoints for filtering.'
-        );
+        throw new Error('Search: semantic search does not support include(), exclude(), or boost() filters. Use filter_and_sort or boost endpoints for filtering.');
       }
       if (this._sort_by != null) {
-        throw new Error(
-          'Search: semantic search does not support sortBy(). Results are ranked by similarity.'
-        );
+        throw new Error('Search: semantic search does not support sortBy(). Results are ranked by similarity.');
       }
     } else if (endpoint === '/search/boost') {
       if (this._sort_by != null) {
-        throw new Error(
-          'Search: boost endpoint does not support sortBy(). Use filter_and_sort for sorting.'
-        );
+        throw new Error('Search: boost endpoint does not support sortBy(). Use filter_and_sort for sorting.');
       }
     }
     const payload = this.getPayload();
@@ -145,24 +168,17 @@ export class Search {
     this.lastResult = result;
     if (!result.result) throw new Error('Search.execute: result.result is undefined');
     const res = result.result;
-    const infos = {
-      total_hits: res?.total_hits ?? 0,
-      fetched_hits: res?.hits?.length ?? 0,
-      took_es: res?.took_es ?? 0,
-      took_backend: res?.took_backend ?? 0,
-      took_sdk: result.took_sdk,
-      max_score: res?.max_score ?? 0,
-    };
     this._log('Search result:');
-    this._log(`  total_hits: ${infos.total_hits}`);
-    this._log(`  fetched_hits: ${infos.fetched_hits}`);
-    this._log(`  took_es: ${infos.took_es}`);
-    this._log(`  took_backend: ${infos.took_backend}`);
-    this._log(`  took_sdk: ${infos.took_sdk}`);
-    this._log(`  max_score: ${infos.max_score}`);
+    this._log(`  total_hits: ${res?.total_hits ?? 0}`);
+    this._log(`  fetched_hits: ${res?.hits?.length ?? 0}`);
+    this._log(`  took_es: ${res?.took_es ?? 0}`);
+    this._log(`  took_backend: ${res?.took_backend ?? 0}`);
+    this._log(`  took_sdk: ${result.took_sdk}`);
+    this._log(`  max_score: ${res?.max_score ?? 0}`);
     return res.hits;
   }
   async frequentValues(field, size = 25) {
+    if (this._mode === 'match') return [];
     if (!this._index || typeof this._index !== 'string' || !this._index.trim()) {
       throw new Error('Search.frequentValues: index must be set (call index(name) first)');
     }
@@ -176,10 +192,7 @@ export class Search {
     const endpoint = `/search/frequent_values/${encodeURIComponent(this._index)}/${encodeURIComponent(field.trim())}?size=${n}`;
     const url = `${this._url}${endpoint}`;
     this.log(`GET ${url}`);
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${this._apiKey}` },
-    });
+    const response = await fetch(url, { method: 'GET', headers: { Authorization: `Bearer ${this._apiKey}` } });
     if (!response.ok) {
       const text = await response.text();
       let message = `Search frequentValues error: ${response.status} ${response.statusText}`;
@@ -196,6 +209,7 @@ export class Search {
     return result;
   }
   async lookup(docId) {
+    if (this._mode === 'match') return null;
     if (!this._index || typeof this._index !== 'string' || !this._index.trim()) {
       throw new Error('Search.lookup: index must be set (call index(name) first)');
     }
@@ -206,10 +220,7 @@ export class Search {
     const url = `${this._url}${endpoint}`;
     this.log(`GET ${url}`);
     const startTime = performance.now();
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${this._apiKey}` },
-    });
+    const response = await fetch(url, { method: 'GET', headers: { Authorization: `Bearer ${this._apiKey}` } });
     const frontendTime = Math.round(performance.now() - startTime);
     if (!response.ok) {
       const text = await response.text();
@@ -244,19 +255,10 @@ export class Search {
     this._size = n;
     return this;
   }
-  onlyIds(value) {
-    this._only_ids = value == null ? true : Boolean(value);
-    return this;
-  }
-  includeVectors(value) {
-    this._include_vector = value == null ? true : Boolean(value);
-    return this;
-  }
+  onlyIds(value) { this._only_ids = value == null ? true : Boolean(value); return this; }
+  includeVectors(value) { this._include_vector = value == null ? true : Boolean(value); return this; }
   selectFields(fields) {
-    if (fields === null) {
-      this._select_fields = null;
-      return this;
-    }
+    if (fields === null) { this._select_fields = null; return this; }
     if (!Array.isArray(fields)) throw new Error('Search.selectFields: fields must be an array of strings or null');
     const normalized = fields.map((f) => (typeof f === 'string' ? f.trim() : String(f)));
     if (normalized.some((f) => !f)) throw new Error('Search.selectFields: each field must be a non-empty string');
@@ -286,18 +288,9 @@ export class Search {
     this._sort_by = { field: field.trim(), order: direction };
     return this;
   }
-  include() {
-    this._active_array = this._include;
-    return this;
-  }
-  exclude() {
-    this._active_array = this._exclude;
-    return this;
-  }
-  boost() {
-    this._active_array = this._boost;
-    return this;
-  }
+  include() { this._active_array = this._include; return this; }
+  exclude() { this._active_array = this._exclude; return this; }
+  boost() { this._active_array = this._boost; return this; }
   _requireActiveArray() {
     if (this._active_array === null) throw new Error('Search: call include(), exclude(), or boost() before adding filters');
   }
@@ -317,82 +310,26 @@ export class Search {
     this._active_array.push(filterInstance);
     return this;
   }
-  term(field, value, boost = null) {
-    this._requireActiveArray();
-    this._requireBoostForBoostArray(boost);
-    this._active_array.push(new TermFilter(field, value, boost));
-    return this;
+  term(field, value, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new TermFilter(field, value, boost)); return this; }
+  terms(field, values, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new TermsFilter(field, values, boost)); return this; }
+  numeric(field, operator, value, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new NumericFilter(field, operator, value, boost)); return this; }
+  date(field, dateFrom = null, dateTo = null, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new DateFilter(field, dateFrom, dateTo, boost)); return this; }
+  geo(field, value, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new GeoFilter(field, value, boost)); return this; }
+  match(field, value, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new MatchFilter(field, value, boost)); return this; }
+  isNull(field, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new IsNullFilter(field, boost)); return this; }
+  notNull(field, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new NotNullFilter(field, boost)); return this; }
+  custom(field, value, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new CustomFilter(field, value, boost)); return this; }
+  groupBoost(lookup_index, field, value, group, min_boost = null, max_boost = null, n = null) { this._requireActiveArray(); this._active_array.push(new GroupBoostFilter(lookup_index, field, value, group, min_boost, max_boost, n)); return this; }
+  termsLookup(lookup_index, field, value, path, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new TermsLookupFilter(lookup_index, field, value, path, boost)); return this; }
+  consoleAccount(field, value, path, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new ConsoleAccountFilter(field, value, path, boost)); return this; }
+  /** Synchronously test whether `candidate` would pass this Search's include/exclude filters.
+   * Convenience wrapper around the standalone matchFilters() — useful for unit tests. */
+  matchesCandidate(candidate) {
+    const doc = candidate?._source && typeof candidate._source === 'object'
+      ? { ...candidate, ...candidate._source }
+      : candidate;
+    return matchFilters(doc, this.getFilters());
   }
-  terms(field, values, boost = null) {
-    this._requireActiveArray();
-    this._requireBoostForBoostArray(boost);
-    this._active_array.push(new TermsFilter(field, values, boost));
-    return this;
-  }
-  numeric(field, operator, value, boost = null) {
-    this._requireActiveArray();
-    this._requireBoostForBoostArray(boost);
-    this._active_array.push(new NumericFilter(field, operator, value, boost));
-    return this;
-  }
-  date(field, dateFrom = null, dateTo = null, boost = null) {
-    this._requireActiveArray();
-    this._requireBoostForBoostArray(boost);
-    this._active_array.push(new DateFilter(field, dateFrom, dateTo, boost));
-    return this;
-  }
-  geo(field, value, boost = null) {
-    this._requireActiveArray();
-    this._requireBoostForBoostArray(boost);
-    this._active_array.push(new GeoFilter(field, value, boost));
-    return this;
-  }
-  match(field, value, boost = null) {
-    this._requireActiveArray();
-    this._requireBoostForBoostArray(boost);
-    this._active_array.push(new MatchFilter(field, value, boost));
-    return this;
-  }
-  isNull(field, boost = null) {
-    this._requireActiveArray();
-    this._requireBoostForBoostArray(boost);
-    this._active_array.push(new IsNullFilter(field, boost));
-    return this;
-  }
-  notNull(field, boost = null) {
-    this._requireActiveArray();
-    this._requireBoostForBoostArray(boost);
-    this._active_array.push(new NotNullFilter(field, boost));
-    return this;
-  }
-  custom(field, value, boost = null) {
-    this._requireActiveArray();
-    this._requireBoostForBoostArray(boost);
-    this._active_array.push(new CustomFilter(field, value, boost));
-    return this;
-  }
-  groupBoost(lookup_index, field, value, group, min_boost = null, max_boost = null, n = null) {
-    this._requireActiveArray();
-    this._active_array.push(new GroupBoostFilter(lookup_index, field, value, group, min_boost, max_boost, n));
-    return this;
-  }
-  termsLookup(lookup_index, field, value, path, boost = null) {
-    this._requireActiveArray();
-    this._requireBoostForBoostArray(boost);
-    this._active_array.push(new TermsLookupFilter(lookup_index, field, value, path, boost));
-    return this;
-  }
-  consoleAccount(field, value, path, boost = null) {
-    this._requireActiveArray();
-    this._requireBoostForBoostArray(boost);
-    this._active_array.push(new ConsoleAccountFilter(field, value, path, boost));
-    return this;
-  }
-  log(string) {
-    this._log(string);
-  }
-  show(results) {
-    this._show(results);
-  }
+  log(string) { this._log(string); }
+  show(results) { this._show(results); }
 }
-

@@ -1,9 +1,12 @@
 /**
- * MBD Studio SDK – search, features, scoring, and ranking for personalized feeds.
+ * MBD Studio SDK – search, features, scoring, ranking, hydration, notifications.
  * @example
  * const config = new StudioConfig({ apiKey, commonUrl });
  * const studio = new StudioV1({ config });
  * const hits = await studio.search().index('farcaster-items').include().term('type', 'cast').execute();
+ *
+ * // v0.6 — notifications:
+ * await studio.notification('my_alerts').algos([1, 2]).webhook('https://...').activate();
  */
 
 // --- StudioConfig ---
@@ -17,12 +20,33 @@ export interface StudioConfigOptions {
     featuresService: string;
     scoringService: string;
     rankingService: string;
+    deployService?: string;
   };
   log?: (msg: string) => void;
   show?: (results?: unknown) => void;
+  /** v0.6 — set to 'match' to short-circuit all builder execute() calls into
+   * filter/target snapshots written to `captures`. Used by the push worker. */
+  mode?: 'normal' | 'match';
+  captures?: StudioCaptures;
+}
+
+export interface StudioCaptures {
+  searches: Array<{ index: string | null; include: object[]; exclude: object[]; boost: object[] }>;
+  hydrations: Array<{ index: string | null; targets: Record<string, unknown> }>;
+  rankings: Array<{ sort?: unknown; diversity?: unknown; limits_by_field?: unknown }>;
+  injectedCandidate: object | null;
 }
 
 export class StudioConfig {
+  readonly searchService: string;
+  readonly storiesService: string;
+  readonly featuresService: string;
+  readonly scoringService: string;
+  readonly rankingService: string;
+  readonly deployService: string;
+  readonly apiKey: string;
+  readonly mode: 'normal' | 'match';
+  readonly captures: StudioCaptures;
   constructor(options: StudioConfigOptions);
 }
 
@@ -52,24 +76,13 @@ export interface SearchResult {
   max_score?: number;
 }
 
-export interface FrequentValueItem {
-  id: string | number;
-  count: number;
-}
-
+export interface FrequentValueItem { id: string | number; count: number; }
 export type FrequentValuesResult = FrequentValueItem[];
 
 // --- Hydration ---
 
-export interface HydrationShare {
-  plugin: string;
-  share?: number;
-  params?: Record<string, unknown>;
-}
-
+export interface HydrationShare { plugin: string; share?: number; params?: Record<string, unknown>; }
 export interface HydrationSpec {
-  /** Optional — when omitted the server resolves backing plugins via the
-   * target's preset registry (the recommended user-facing path). */
   sources?: HydrationShare[];
   limit?: number;
   family?: string;
@@ -78,66 +91,30 @@ export interface HydrationSpec {
   dedupe_key?: string;
   drop_empty?: boolean;
 }
-
-export interface HydrationTargetDescriptor {
-  name: string;
-  family: string | null;
-  plugin_count: number;
-}
-
+export interface HydrationTargetDescriptor { name: string; family: string | null; plugin_count: number; }
 export type HydrationBlock = Record<string, HydrationSpec>;
-
-export interface HydrationStatsTarget {
-  populated: number;
-  empty: number;
-}
-
-export interface HydrationStats {
-  items_in: number;
-  items_returned: number;
-  targets: Record<string, HydrationStatsTarget>;
-}
-
+export interface HydrationStatsTarget { populated: number; empty: number; }
+export interface HydrationStats { items_in: number; items_returned: number; targets: Record<string, HydrationStatsTarget>; }
 export interface HydrationResult {
-  // Either `hits` (when posting full hits) or `metadata` (when posting item_ids).
   hits?: SearchHit[];
   metadata?: Record<string, Record<string, Record<string, unknown>>>;
   stats: HydrationStats;
   took_backend?: number;
 }
-
 export interface HydrationDescribeTarget {
-  family: string;
-  merge: 'mix' | 'pick_one' | 'replace';
-  limit: number;
-  drop_empty: boolean;
-  fields: string[];
-  example: Record<string, unknown>;
-  sources: Array<{ plugin: string; share: number }>;
+  family: string; merge: 'mix' | 'pick_one' | 'replace'; limit: number; drop_empty: boolean;
+  fields: string[]; example: Record<string, unknown>; sources: Array<{ plugin: string; share: number }>;
 }
-
-export interface HydrationDescribeResult {
-  targets: Record<string, HydrationDescribeTarget>;
-}
-
+export interface HydrationDescribeResult { targets: Record<string, HydrationDescribeTarget>; }
 export interface HydrationPluginDescriptor {
-  name: string;
-  family: string;
-  target_type: 'scalar' | 'dict' | 'list' | 'record';
-  applicable_indexes: string[];
-  source: string;
-  lookup: { kind: string; source_field: string | null };
-  sort_key: string | null;
-  dedupe_key: string | null;
-  max_cap: number;
-  requires_params: string[];
-  description: string;
+  name: string; family: string; target_type: 'scalar' | 'dict' | 'list' | 'record';
+  applicable_indexes: string[]; source: string; lookup: { kind: string; source_field: string | null };
+  sort_key: string | null; dedupe_key: string | null; max_cap: number; requires_params: string[]; description: string;
 }
 
 export class Hydration {
   lastCall: { endpoint: string; payload: unknown } | null;
   lastResult: unknown;
-
   index(name: string): this;
   hits(arr: SearchHit[]): this;
   itemIds(ids: string[]): this;
@@ -145,6 +122,8 @@ export class Hydration {
   clearTarget(name: string): this;
   clearTargets(): this;
   dropEmptyHits(value?: boolean): this;
+  /** v0.6 — snapshot of registered target → spec (no network). */
+  getTargets(): { index: string | null; targets: Record<string, unknown> };
   execute(): Promise<HydrationResult>;
   describe(): Promise<HydrationDescribeResult>;
   preview(itemId?: string): Promise<HydrationResult>;
@@ -178,23 +157,13 @@ export class Search {
   isNull(field: string, boost?: number | null): this;
   notNull(field: string, boost?: number | null): this;
   custom(field: string, value: unknown, boost?: number | null): this;
-  groupBoost(
-    lookup_index: string,
-    field: string,
-    value: unknown,
-    group: string,
-    min_boost?: number | null,
-    max_boost?: number | null,
-    n?: number | null
-  ): this;
-  termsLookup(
-    lookup_index: string,
-    field: string,
-    value: unknown,
-    path: string,
-    boost?: number | null
-  ): this;
+  groupBoost(lookup_index: string, field: string, value: unknown, group: string, min_boost?: number | null, max_boost?: number | null, n?: number | null): this;
+  termsLookup(lookup_index: string, field: string, value: unknown, path: string, boost?: number | null): this;
   consoleAccount(field: string, value: unknown, path: string, boost?: number | null): this;
+  /** v0.6 — snapshot of include/exclude/boost filters + index (no network). */
+  getFilters(): { index: string | null; include: object[]; exclude: object[]; boost: object[] };
+  /** v0.6 — synchronously test whether candidate passes include/exclude filters. */
+  matchesCandidate(candidate: SearchHit | object): boolean;
   execute(): Promise<SearchHit[]>;
   frequentValues(field: string, size?: number): Promise<FrequentValuesResult>;
   lookup(docId: string): Promise<unknown>;
@@ -217,7 +186,6 @@ export interface FeaturesResult {
 export class Features {
   lastCall: { endpoint: string; payload: unknown } | null;
   lastResult: unknown;
-
   version(v: string): this;
   items(items: Array<{ index: string; id: string }>): this;
   user(index: string, userId: string): this;
@@ -231,38 +199,24 @@ export class Features {
 export class Scoring {
   lastCall: { endpoint: string; payload: unknown } | null;
   lastResult: unknown;
-
   model(endpoint: string): this;
   userId(userId: string): this;
   itemIds(itemIds: string[]): this;
-  execute(): Promise<string[]>;
+  execute(): Promise<Array<{ id: string; score: number }>>;
   log(string: string): void;
   show(results?: unknown): void;
 }
 
 // --- Ranking ---
 
-export interface RankingItem {
-  item_id: string;
-  score: number;
-}
-
-export interface RankingResult {
-  items: RankingItem[];
-  [key: string]: unknown;
-}
+export interface RankingItem { item_id: string; score: number; }
+export interface RankingResult { items: RankingItem[]; [key: string]: unknown; }
 
 export class Ranking {
   lastCall: { endpoint: string; payload: unknown } | null;
   lastResult: unknown;
-
   sortingMethod(x: 'sort' | 'linear' | 'mix'): this;
-  sortBy(
-    field: string,
-    direction?: 'asc' | 'desc',
-    field2?: string,
-    direction2?: 'asc' | 'desc'
-  ): this;
+  sortBy(field: string, direction?: 'asc' | 'desc', field2?: string, direction2?: 'asc' | 'desc'): this;
   weight(field: string, w: number): this;
   mix(field: string, direction: 'asc' | 'desc', percentage: number): this;
   diversity(method: 'fields' | 'semantic'): this;
@@ -278,6 +232,51 @@ export class Ranking {
   show(results?: unknown): void;
 }
 
+// --- Notification (v0.6) ---
+
+export interface NotificationDelivery { webhook_url: string; auth_header?: string; }
+export interface NotificationGuards {
+  daily_budget?: number;
+  per_type_limits?: Record<string, number>;
+  cooldown_hours?: number;
+  cooldown_by?: 'token' | 'wallet' | 'market';
+  priority_filter?: 'P0' | 'P0,P1' | 'P0,P1,P2';
+}
+export interface NotificationRecord {
+  notification_id: number;
+  account_id: string;
+  user_id: string | null;
+  name: string;
+  status: 'active' | 'paused';
+  algo_ids: number[];
+  delivery: NotificationDelivery;
+  guards: NotificationGuards;
+  created_at: string;
+  updated_at: string;
+}
+
+export class Notification {
+  lastCall: { endpoint: string; payload: unknown } | null;
+  lastResult: unknown;
+  algos(ids: Array<number | string>): this;
+  webhook(url: string, opts?: { authBearer?: string; authHeader?: string }): this;
+  budget(opts: { daily?: number; perType?: Record<string, number> }): this;
+  cooldown(opts: { hours?: number; by?: 'token' | 'wallet' | 'market' }): this;
+  priorityFilter(value: 'P0' | 'P0,P1' | 'P0,P1,P2'): this;
+  describe(): { name: string; algo_ids: number[]; delivery: NotificationDelivery; guards: NotificationGuards };
+  save(): Promise<NotificationRecord>;
+  update(notificationId?: number): Promise<NotificationRecord>;
+  activate(): Promise<NotificationRecord>;
+  pause(notificationId?: number): Promise<NotificationRecord>;
+  preview(opts?: { hours?: number; notificationId?: number }): Promise<unknown>;
+  test(notificationId?: number): Promise<unknown>;
+  log(s: string): void;
+  show(r?: unknown): void;
+}
+
+/** v0.6 — standalone predicate over a candidate doc. */
+export function matchFilters(doc: object, filters: { include?: object[]; exclude?: object[] }): boolean;
+
 // --- Studio (main client) ---
 
 export interface StudioOptions {
@@ -292,9 +291,10 @@ export interface StudioOptions {
 
 export class Studio {
   constructor(options: StudioOptions);
-
   version(): string;
   forUser(index: string, userId: string): void;
+  /** v0.6 — seed a single doc into the candidates list for match-mode evaluation. */
+  injectCandidate(doc: object): void;
   search(): Search;
   frequentValues(index: string, field: string, size?: number): Promise<FrequentValuesResult>;
   addCandidates(array: SearchHit[]): void;
@@ -312,6 +312,8 @@ export class Studio {
   hydrationTargets(index: string): Promise<HydrationTargetDescriptor[]>;
   hydrationPlugins(): Promise<HydrationPluginDescriptor[]>;
   hydrationDefaults(index: string): Promise<HydrationBlock>;
+  /** v0.6 — top-level Notification builder. */
+  notification(name: string): Notification;
 }
 
 // --- Main export ---
