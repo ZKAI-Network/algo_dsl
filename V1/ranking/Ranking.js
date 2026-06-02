@@ -13,48 +13,32 @@ export class Ranking {
     if (!options || typeof options !== 'object') {
       throw new Error('Ranking: options object is required');
     }
-    const { url, apiKey, candidates = [], origin = 'sdk', log, show } = options;
-    if (typeof url !== 'string' || !url.trim()) {
-      throw new Error('Ranking: options.url is required and must be a non-empty string');
-    }
-    if (typeof apiKey !== 'string' || !apiKey.trim()) {
-      throw new Error('Ranking: options.apiKey is required and must be a non-empty string');
-    }
+    const { url, apiKey, candidates = [], origin = 'sdk', log, show, mode, captures } = options;
+    if (typeof url !== 'string' || !url.trim()) throw new Error('Ranking: options.url is required and must be a non-empty string');
+    if (typeof apiKey !== 'string' || !apiKey.trim()) throw new Error('Ranking: options.apiKey is required and must be a non-empty string');
     this._url = url.trim().replace(/\/$/, '');
     this._apiKey = apiKey.trim();
     this._origin = typeof origin === 'string' && origin.trim() ? origin.trim() : 'sdk';
     this._log = typeof log === 'function' ? log : console.log.bind(console);
     this._show = typeof show === 'function' ? show : console.log.bind(console);
     this._candidates = candidates;
+    this._mode = mode === 'match' ? 'match' : 'normal';
+    this._captures = captures || null;
   }
-  getEndpoint() {
-    return '/ranking/feed';
-  }
-  /** Collects fields referenced by sort/diversity/limits; sets needEmbedding for semantic diversity. */
+  getEndpoint() { return '/ranking/feed'; }
   _getUsefulFieldsAndNeedEmbedding() {
     const useful = new Set();
     let needEmbedding = false;
     if (this._sortParams) {
-      if (this._sortMethod === 'sort' && Array.isArray(this._sortParams.fields)) {
-        this._sortParams.fields.forEach((f) => useful.add(f));
-      }
-      if (this._sortMethod === 'linear' && Array.isArray(this._sortParams)) {
-        this._sortParams.forEach((p) => p.field && useful.add(p.field));
-      }
-      if (this._sortMethod === 'mix' && Array.isArray(this._sortParams)) {
-        this._sortParams.forEach((p) => p.field && useful.add(p.field));
-      }
+      if (this._sortMethod === 'sort' && Array.isArray(this._sortParams.fields)) this._sortParams.fields.forEach((f) => useful.add(f));
+      if (this._sortMethod === 'linear' && Array.isArray(this._sortParams)) this._sortParams.forEach((p) => p.field && useful.add(p.field));
+      if (this._sortMethod === 'mix' && Array.isArray(this._sortParams)) this._sortParams.forEach((p) => p.field && useful.add(p.field));
     }
-    if (this._diversityMethod === 'fields' && this._diversityParams?.fields) {
-      this._diversityParams.fields.forEach((f) => useful.add(f));
-    }
+    if (this._diversityMethod === 'fields' && this._diversityParams?.fields) this._diversityParams.fields.forEach((f) => useful.add(f));
     if (this._diversityMethod === 'semantic') needEmbedding = true;
-    if (this._limitsByFieldEnabled && this._limitRules.length > 0) {
-      this._limitRules.forEach((r) => r.field && useful.add(r.field));
-    }
+    if (this._limitsByFieldEnabled && this._limitRules.length > 0) this._limitRules.forEach((r) => r.field && useful.add(r.field));
     return { usefulFields: useful, needEmbedding };
   }
-  /** Builds items from hit._features, hit._scores; adds embed (item_sem_embed2 or text_vector) if semantic diversity. */
   getPayload() {
     const { usefulFields, needEmbedding } = this._getUsefulFieldsAndNeedEmbedding();
     const hits = this._candidates || [];
@@ -82,22 +66,14 @@ export class Ranking {
   }
   _buildSortConfig() {
     if (!this._sortParams) return undefined;
-    if (this._sortMethod === 'sort' && this._sortParams.fields?.length > 0) {
-      return { method: 'sort', params: { ...this._sortParams } };
-    }
-    if (this._sortMethod === 'linear' && Array.isArray(this._sortParams) && this._sortParams.length > 0) {
-      return { method: 'linear', params: this._sortParams.map((p) => ({ field: p.field, weight: p.weight })) };
-    }
-    if (this._sortMethod === 'mix' && Array.isArray(this._sortParams) && this._sortParams.length > 0) {
-      return { method: 'mix', params: this._sortParams.map((p) => ({ field: p.field, direction: p.direction, percentage: p.percentage })) };
-    }
+    if (this._sortMethod === 'sort' && this._sortParams.fields?.length > 0) return { method: 'sort', params: { ...this._sortParams } };
+    if (this._sortMethod === 'linear' && Array.isArray(this._sortParams) && this._sortParams.length > 0) return { method: 'linear', params: this._sortParams.map((p) => ({ field: p.field, weight: p.weight })) };
+    if (this._sortMethod === 'mix' && Array.isArray(this._sortParams) && this._sortParams.length > 0) return { method: 'mix', params: this._sortParams.map((p) => ({ field: p.field, direction: p.direction, percentage: p.percentage })) };
     return undefined;
   }
   _buildDiversityConfig() {
     if (!this._diversityMethod) return undefined;
-    if (this._diversityMethod === 'fields' && this._diversityParams?.fields?.length > 0) {
-      return { method: 'fields', params: { fields: [...this._diversityParams.fields] } };
-    }
+    if (this._diversityMethod === 'fields' && this._diversityParams?.fields?.length > 0) return { method: 'fields', params: { fields: [...this._diversityParams.fields] } };
     if (this._diversityMethod === 'semantic') {
       const lambda = this._diversityParams?.lambda ?? 0.5;
       const horizon = this._diversityParams?.horizon ?? 20;
@@ -112,9 +88,7 @@ export class Ranking {
     return { every_n: everyN, rules: this._limitRules.map((r) => ({ field: r.field, limit: Number(r.limit) || 0 })) };
   }
   sortingMethod(x) {
-    if (x !== 'sort' && x !== 'linear' && x !== 'mix') {
-      throw new Error('Ranking.sortingMethod: must be "sort", "linear", or "mix"');
-    }
+    if (x !== 'sort' && x !== 'linear' && x !== 'mix') throw new Error('Ranking.sortingMethod: must be "sort", "linear", or "mix"');
     this._sortMethod = x;
     if (x === 'sort') this._sortParams = { fields: [], direction: [] };
     if (x === 'linear') this._sortParams = [];
@@ -122,9 +96,7 @@ export class Ranking {
     return this;
   }
   sortBy(field, direction = 'desc', field2, direction2 = 'desc') {
-    if (this._sortMethod === 'linear' || this._sortMethod === 'mix') {
-      throw new Error('Ranking.sortBy: only applies when sortingMethod is "sort" (already set to something else)');
-    }
+    if (this._sortMethod === 'linear' || this._sortMethod === 'mix') throw new Error('Ranking.sortBy: only applies when sortingMethod is "sort" (already set to something else)');
     this._sortMethod = 'sort';
     if (!this._sortParams || !this._sortParams.fields) this._sortParams = { fields: [], direction: [] };
     const f = typeof field === 'string' && field.trim() ? field.trim() : null;
@@ -165,12 +137,8 @@ export class Ranking {
   fields(arrayOrItem) {
     if (this._diversityMethod !== 'fields') throw new Error('Ranking.fields: only applies when diversity(method) is "fields"');
     if (!this._diversityParams || !Array.isArray(this._diversityParams.fields)) this._diversityParams = { fields: [] };
-    const add = (name) => {
-      const s = typeof name === 'string' && name.trim() ? name.trim() : null;
-      if (s && !this._diversityParams.fields.includes(s)) this._diversityParams.fields.push(s);
-    };
-    if (Array.isArray(arrayOrItem)) arrayOrItem.forEach(add);
-    else add(arrayOrItem);
+    const add = (name) => { const s = typeof name === 'string' && name.trim() ? name.trim() : null; if (s && !this._diversityParams.fields.includes(s)) this._diversityParams.fields.push(s); };
+    if (Array.isArray(arrayOrItem)) arrayOrItem.forEach(add); else add(arrayOrItem);
     return this;
   }
   horizon(n) {
@@ -185,14 +153,8 @@ export class Ranking {
     this._diversityParams.lambda = Number(value);
     return this;
   }
-  limitByField() {
-    this._limitsByFieldEnabled = true;
-    return this;
-  }
-  every(n) {
-    this._everyN = Number(n);
-    return this;
-  }
+  limitByField() { this._limitsByFieldEnabled = true; return this; }
+  every(n) { this._everyN = Number(n); return this; }
   limit(field, max) {
     const f = typeof field === 'string' && field.trim() ? field.trim() : null;
     if (!f) throw new Error('Ranking.limit: field must be a non-empty string');
@@ -201,18 +163,22 @@ export class Ranking {
     else this._limitRules.push({ field: f, limit: Number(max) || 0 });
     return this;
   }
-  candidates(candidates) {
-    this._candidates = candidates;
-    return this;
-  }
+  candidates(candidates) { this._candidates = candidates; return this; }
   async execute() {
+    if (this._mode === 'match') {
+      const items = (this._candidates || []).map((c) => ({ item_id: String(c?._id ?? ''), score: 1 }));
+      const snap = { sort: this._buildSortConfig(), diversity: this._buildDiversityConfig(), limits_by_field: this._buildLimitsByFieldConfig() };
+      if (this._captures) this._captures.rankings.push(snap);
+      const res = { items };
+      this.lastCall = { endpoint: 'match-mode', payload: snap };
+      this.lastResult = { result: res };
+      return res;
+    }
     if (!Array.isArray(this._candidates) || this._candidates.length === 0) {
       throw new Error('Ranking.execute: candidates must be set and non-empty (pass to constructor or call candidates([...]))');
     }
     const sortConfig = this._buildSortConfig();
-    if (!sortConfig) {
-      throw new Error('Ranking.execute: at least one sort configuration is required (e.g. sortingMethod("sort").sortBy("field", "desc"))');
-    }
+    if (!sortConfig) throw new Error('Ranking.execute: at least one sort configuration is required (e.g. sortingMethod("sort").sortBy("field", "desc"))');
     const endpoint = this.getEndpoint();
     const payload = this.getPayload();
     const url = `${this._url}${endpoint}`;
@@ -221,11 +187,7 @@ export class Ranking {
     const logPayload = { ...rest, items_length: Array.isArray(items) ? items.length : 0 };
     this.log(`Payload:\n${JSON.stringify(logPayload, null, 2)}`);
     const startTime = performance.now();
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this._apiKey}` },
-      body: JSON.stringify(payload),
-    });
+    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this._apiKey}` }, body: JSON.stringify(payload) });
     const frontendTime = Math.round(performance.now() - startTime);
     if (!response.ok) {
       const text = await response.text();
@@ -251,10 +213,6 @@ export class Ranking {
     this._log(`  items: ${resultItems.length}`);
     return res;
   }
-  log(string) {
-    this._log(string);
-  }
-  show(results) {
-    this._show(results);
-  }
+  log(string) { this._log(string); }
+  show(results) { this._show(results); }
 }
