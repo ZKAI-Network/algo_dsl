@@ -61,6 +61,6 @@ export class StudioConfig {
     this.mode = mode === 'match' ? 'match' : 'normal';
     this.captures = captures && typeof captures === 'object'
       ? captures
-      : { searches: [], hydrations: [], rankings: [], injectedCandidate: null };
+      : { searches: [], hydrations: [], rankings: [], triggers: [], injectedCandidate: null };
   }
 }

@@ -1,5 +1,28 @@
 # algo-dsl release notes
 
+## 0.7.0 — Algo triggers (subscribe vs poll)
+
+- New `Search.trigger(spec)` builder method that declares how the push
+  worker should discover candidates for this algo:
+  - `{ mode: 'subscribe', topic?: 'notification-candidates' }` — current
+    behavior, default for every existing algo. PubSub event-driven.
+  - `{ mode: 'poll', interval_seconds, cursor_field, dedupe_key,
+    initial_lookback_seconds? }` — new. Worker queries the algo's ES
+    index on the given interval. Customer-defined signals against any
+    ES index alpha doesn't publish to.
+- `Search.getTrigger()` returns the captured spec (or null).
+- `StudioCaptures` gains a `triggers: AlgoTrigger[]` array populated in
+  match mode.
+- `AlgoTrigger` type exported from `index.d.ts`.
+
+Validation at the SDK level mirrors ds_deploy's server-side check —
+poll requires interval >= 10, cursor_field, dedupe_key. Misconfigured
+specs throw at call time.
+
+No breaking changes. Algos without `.trigger(...)` default to subscribe.
+
+# algo-dsl release notes
+
 ## 0.6.0 — Notifications as a first-class Studio object
 
 - New top-level builder `mbd.notification(name)` — composes 1-N saved algos
