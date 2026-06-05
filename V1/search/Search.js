@@ -334,7 +334,7 @@ export class Search {
     }
     const mode = spec.mode;
     if (mode !== 'subscribe' && mode !== 'poll') {
-      throw new Error(\`Search.trigger: spec.mode must be 'subscribe' or 'poll' (got: \${mode})\`);
+      throw new Error(`Search.trigger: spec.mode must be 'subscribe' or 'poll' (got: ${mode})`);
     }
     if (mode === 'poll') {
       const interval = Number(spec.interval_seconds);
