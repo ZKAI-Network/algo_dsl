@@ -8,3 +8,4 @@
 import * as V1 from './V1/index.js';
 export { StudioConfig } from './StudioConfig.js';
 export const StudioV1 = V1.Studio;
+export { matchFilters } from './V1/notification/match.js';
