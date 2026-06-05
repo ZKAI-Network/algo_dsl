@@ -34,8 +34,13 @@ export interface StudioCaptures {
   searches: Array<{ index: string | null; include: object[]; exclude: object[]; boost: object[] }>;
   hydrations: Array<{ index: string | null; targets: Record<string, unknown> }>;
   rankings: Array<{ sort?: unknown; diversity?: unknown; limits_by_field?: unknown }>;
+  triggers: AlgoTrigger[];
   injectedCandidate: object | null;
 }
+
+export type AlgoTrigger =
+  | { mode: 'subscribe'; topic?: string }
+  | { mode: 'poll'; interval_seconds: number; cursor_field: string; dedupe_key: string; initial_lookback_seconds?: number };
 
 export class StudioConfig {
   readonly searchService: string;
@@ -164,6 +169,10 @@ export class Search {
   getFilters(): { index: string | null; include: object[]; exclude: object[]; boost: object[] };
   /** v0.6 — synchronously test whether candidate passes include/exclude filters. */
   matchesCandidate(candidate: SearchHit | object): boolean;
+  /** v0.7 — declare how the worker discovers candidates for this algo. */
+  trigger(spec: AlgoTrigger): this;
+  /** v0.7 — snapshot of the trigger spec (or null if .trigger() never called). */
+  getTrigger(): AlgoTrigger | null;
   execute(): Promise<SearchHit[]>;
   frequentValues(field: string, size?: number): Promise<FrequentValuesResult>;
   lookup(docId: string): Promise<unknown>;

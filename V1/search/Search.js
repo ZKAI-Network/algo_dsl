@@ -25,6 +25,7 @@ export class Search {
   _exclude = [];
   _boost = [];
   _active_array = null;
+  _trigger = null;
   lastCall = null;
   lastResult = null;
   constructor(options) {
@@ -315,6 +316,48 @@ export class Search {
   numeric(field, operator, value, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new NumericFilter(field, operator, value, boost)); return this; }
   date(field, dateFrom = null, dateTo = null, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new DateFilter(field, dateFrom, dateTo, boost)); return this; }
   geo(field, value, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new GeoFilter(field, value, boost)); return this; }
+  /** v0.7 — declare how the push worker should discover candidates for this
+   * algo: subscribe to alpha's notification-candidates PubSub topic (default,
+   * unchanged from v0.6), or poll any ES index on a schedule.
+   *
+   *   .trigger({ mode: 'subscribe', topic: 'notification-candidates' })
+   *   .trigger({ mode: 'poll', interval_seconds: 30,
+   *              cursor_field: 'timestamp', dedupe_key: 'signal_id' })
+   *
+   * Runtime no-op — the spec is captured into config.captures.triggers (in
+   * match mode) and serialized into the algo's trigger field by the frontend
+   * when saving via POST /deploy/algos. Worker reads it from there.
+   */
+  trigger(spec) {
+    if (spec === null || typeof spec !== 'object' || Array.isArray(spec)) {
+      throw new Error('Search.trigger: spec must be a plain object');
+    }
+    const mode = spec.mode;
+    if (mode !== 'subscribe' && mode !== 'poll') {
+      throw new Error(\`Search.trigger: spec.mode must be 'subscribe' or 'poll' (got: \${mode})\`);
+    }
+    if (mode === 'poll') {
+      const interval = Number(spec.interval_seconds);
+      if (!Number.isFinite(interval) || interval < 10) {
+        throw new Error('Search.trigger: poll mode requires interval_seconds >= 10');
+      }
+      if (typeof spec.cursor_field !== 'string' || !spec.cursor_field.trim()) {
+        throw new Error('Search.trigger: poll mode requires cursor_field (e.g. "timestamp")');
+      }
+      if (typeof spec.dedupe_key !== 'string' || !spec.dedupe_key.trim()) {
+        throw new Error('Search.trigger: poll mode requires dedupe_key (e.g. "signal_id")');
+      }
+    }
+    this._trigger = { ...spec };
+    if (this._captures && Array.isArray(this._captures.triggers)) {
+      this._captures.triggers.push(this._trigger);
+    }
+    return this;
+  }
+  /** Snapshot of the trigger spec (or null if .trigger() never called). */
+  getTrigger() {
+    return this._trigger ? { ...this._trigger } : null;
+  }
   match(field, value, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new MatchFilter(field, value, boost)); return this; }
   isNull(field, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new IsNullFilter(field, boost)); return this; }
   notNull(field, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new NotNullFilter(field, boost)); return this; }
