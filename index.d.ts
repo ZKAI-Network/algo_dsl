@@ -286,6 +286,34 @@ export class Notification {
 /** v0.6 — standalone predicate over a candidate doc. */
 export function matchFilters(doc: object, filters: { include?: object[]; exclude?: object[] }): boolean;
 
+// --- Ingest (v0.8) ---
+
+export interface IngestCustomSignal {
+  detector: string;
+  [kwarg: string]: unknown;
+}
+
+export interface IngestSpec {
+  name: string;
+  preset: string;
+  tune: Record<string, Record<string, unknown>>;
+  disable: string[];
+  custom_signals: Record<string, IngestCustomSignal>;
+  write_to: 'alpha' | 'customer';
+}
+
+export class Ingest {
+  lastCall: { url: string; body: string } | null;
+  lastResult: unknown;
+  preset(key: string): this;
+  tune(signalName: string, overrides: Record<string, unknown>): this;
+  disable(signalName: string): this;
+  signal(signalName: string, spec: IngestCustomSignal): this;
+  writeTo(target: 'alpha' | 'customer'): this;
+  describe(): IngestSpec;
+  execute(): Promise<unknown>;
+}
+
 // --- Studio (main client) ---
 
 export interface StudioOptions {
@@ -323,6 +351,8 @@ export class Studio {
   hydrationDefaults(index: string): Promise<HydrationBlock>;
   /** v0.6 — top-level Notification builder. */
   notification(name: string): Notification;
+  /** v0.8 — customer overlay on alpha's sources.yaml. */
+  ingest(name: string): Ingest;
 }
 
 // --- Main export ---

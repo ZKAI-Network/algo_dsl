@@ -5,6 +5,7 @@ import { Scoring } from './scoring/Scoring.js';
 import { Ranking } from './ranking/Ranking.js';
 import { Hydration } from './hydration/Hydration.js';
 import { Notification } from './notification/Notification.js';
+import { Ingest } from './ingest/Ingest.js';
 import { findIndex } from './utils/indexUtils.js';
 
 /** Main client: search, features, scoring, ranking, hydration, notification. */
@@ -237,6 +238,21 @@ export class Studio {
       url: this._config.deployService,
       apiKey: this._config.apiKey,
       name,
+      log: this._log,
+      show: this._show,
+    });
+  }
+  /** Customer overlay on alpha's sources.yaml — pick a preset, tune
+   * existing signal_types, disable defaults, add custom signals that
+   * reuse alpha's detectors. See V1/ingest/Ingest.js.
+   */
+  ingest(name) {
+    return new Ingest({
+      url: this._config.deployService,
+      apiKey: this._config.apiKey,
+      name,
+      mode: this._config.mode,
+      captures: this._config.captures,
       log: this._log,
       show: this._show,
     });
