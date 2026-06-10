@@ -173,7 +173,11 @@ export class Ingest {
       throw new Error('Ingest.execute: apiKey not configured');
     }
     const url = `${this._url}/deploy/ingests`;
-    const body = JSON.stringify(spec);
+    // Server expects `{ name, algorithm?, spec: {...} }`. describe()
+    // returns the flat shape with `name` mixed in for caller convenience;
+    // pull it back out and nest under `spec`.
+    const { name: specName, ...specBody } = spec;
+    const body = JSON.stringify({ name: specName, spec: specBody });
     this.lastCall = { url, body };
     const response = await fetch(url, {
       method: 'POST',
