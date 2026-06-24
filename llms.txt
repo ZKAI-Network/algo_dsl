@@ -137,6 +137,7 @@ Payload filters are objects with at least `filter` (type string). Optional `boos
 | **group_boost** | `lookup_index`, `value` (lookup doc id), `field`, `group` | Builds **n** (default **10**) `terms` subqueries in a `bool.should`. Each subquery pulls terms from the lookup document at path `{group_prefix}_{i:02d}` (e.g. `label_01`…`label_10` for `group: 'label'`, `tag_01`… for `group: 'tag'`). Boosts are **linearly interpolated** from `max_boost` (first tier) down to `min_boost` (last tier). Defaults: `min_boost=1`, `max_boost=5`, `n=10`. **Use with `/search/boost`** (should clauses) or include with boost on other endpoints as designed. |
 | **terms_lookup** | `lookup_index`, `value`, `field`, `path` | ES `terms` lookup: resolve terms from document `value` in `lookup_index` at `path`. |
 | **console_account** | `field`, `value` (console account id), `path` | Same as terms_lookup but index fixed to `console-accounts`. |
+| **in_app_users** | `field`, `value` (customer id) | terms_lookup against `console-accounts/<customer_id>.in_app_users`. The array is maintained by the data-ingestion writer on every `POST /datasources/:id/users` (parses the `0x…` wallet out of `user_id`). Use it to scope a feed to the customer's pushed audience. |
 
 ### Deprecated / legacy (backend still parses)
 `numeric_whitelist`, `followed_by`, `user_prefs`, `polymarket_wallets`, `blacklist` — index-specific; prefer generic filters when possible.
@@ -148,7 +149,7 @@ Payload filters are objects with at least `filter` (type string). Optional `boos
 - **`/search/es_query`:** Pass through `query` object to ES.
 
 ### SDK shorthand
-`Search` provides: `term`, `terms`, `numeric`, `date`, `match`, `geo`, `isNull`, `notNull`, `custom`, `groupBoost`, `termsLookup`, `consoleAccount`, plus `filter(new XxxFilter(...))`.
+`Search` provides: `term`, `terms`, `numeric`, `date`, `match`, `geo`, `isNull`, `notNull`, `custom`, `groupBoost`, `termsLookup`, `consoleAccount`, `inAppUsers`, plus `filter(new XxxFilter(...))`.
 
 ---
 
@@ -333,6 +334,7 @@ export class Search {
     boost?: number | null
   ): this;
   consoleAccount(field: string, value: unknown, path: string, boost?: number | null): this;
+  inAppUsers(field: string, customer_id: string, boost?: number | null): this;
   execute(): Promise<SearchHit[]>;
   frequentValues(field: string, size?: number): Promise<FrequentValuesResult>;
   lookup(docId: string): Promise<unknown>;

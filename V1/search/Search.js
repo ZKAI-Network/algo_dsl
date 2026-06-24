@@ -1,6 +1,7 @@
 import {
   Filter, TermFilter, TermsFilter, NumericFilter, MatchFilter, GeoFilter, DateFilter,
   IsNullFilter, NotNullFilter, CustomFilter, GroupBoostFilter, TermsLookupFilter, ConsoleAccountFilter,
+  InAppUsersFilter,
 } from './filters/index.js';
 import { matchFilters } from '../notification/match.js';
 
@@ -365,6 +366,7 @@ export class Search {
   groupBoost(lookup_index, field, value, group, min_boost = null, max_boost = null, n = null) { this._requireActiveArray(); this._active_array.push(new GroupBoostFilter(lookup_index, field, value, group, min_boost, max_boost, n)); return this; }
   termsLookup(lookup_index, field, value, path, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new TermsLookupFilter(lookup_index, field, value, path, boost)); return this; }
   consoleAccount(field, value, path, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new ConsoleAccountFilter(field, value, path, boost)); return this; }
+  inAppUsers(field, customer_id, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new InAppUsersFilter(field, customer_id, boost)); return this; }
   /** Synchronously test whether `candidate` would pass this Search's include/exclude filters.
    * Convenience wrapper around the standalone matchFilters() — useful for unit tests. */
   matchesCandidate(candidate) {
