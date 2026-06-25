@@ -1,6 +1,6 @@
 {
   "name": "algo-dsl",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Embed Recommendation Algorithms DSL",
   "repository": {
     "type": "git",
