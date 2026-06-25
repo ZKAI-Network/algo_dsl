@@ -11,3 +11,4 @@ export { CustomFilter } from './CustomFilter.js';
 export { GroupBoostFilter } from './GroupBoostFilter.js';
 export { TermsLookupFilter } from './TermsLookupFilter.js';
 export { ConsoleAccountFilter } from './ConsoleAccountFilter.js';
+export { InAppUsersFilter } from './InAppUsersFilter.js';
