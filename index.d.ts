@@ -165,10 +165,10 @@ export class Search {
   groupBoost(lookup_index: string, field: string, value: unknown, group: string, min_boost?: number | null, max_boost?: number | null, n?: number | null): this;
   termsLookup(lookup_index: string, field: string, value: unknown, path: string, boost?: number | null): this;
   consoleAccount(field: string, value: unknown, path: string, boost?: number | null): this;
-  /** Filter by the customer's in_app_users audience — wallets pushed via the
-   *  data sources users API. Resolves to a terms_lookup against
-   *  console-accounts/<customer_id>.in_app_users. */
-  inAppUsers(field: string, customer_id: string, boost?: number | null): this;
+  /** Filter by the calling customer's in_app_users audience — wallets pushed
+   *  via the data sources users API. The account_id is resolved server-side
+   *  from the request auth (x-account header), so no value is passed in. */
+  inAppUsers(field: string, boost?: number | null): this;
   /** v0.6 — snapshot of include/exclude/boost filters + index (no network). */
   getFilters(): { index: string | null; include: object[]; exclude: object[]; boost: object[] };
   /** v0.6 — synchronously test whether candidate passes include/exclude filters. */
