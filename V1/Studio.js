@@ -4,6 +4,7 @@ import { Features, sortAvailableFeatures } from './features/Features.js';
 import { Scoring } from './scoring/Scoring.js';
 import { Ranking } from './ranking/Ranking.js';
 import { Hydration } from './hydration/Hydration.js';
+import { Leaderboard } from './leaderboard/Leaderboard.js';
 import { Notification } from './notification/Notification.js';
 import { Ingest } from './ingest/Ingest.js';
 import { findIndex } from './utils/indexUtils.js';
@@ -48,6 +49,16 @@ export class Studio {
       show: this._show,
       mode: this._config.mode,
       captures: this._config.captures,
+    });
+  }
+
+  leaderboard() {
+    return new Leaderboard({
+      url: this._config.searchService,
+      apiKey: this._config.apiKey,
+      log: this._log,
+      origin: this._origin,
+      mode: this._config.mode,
     });
   }
   async frequentValues(index, field, size = 25) {

@@ -84,6 +84,81 @@ export interface SearchResult {
 export interface FrequentValueItem { id: string | number; count: number; }
 export type FrequentValuesResult = FrequentValueItem[];
 
+// --- Leaderboard ---
+
+export type LeaderboardChain = 'base' | 'ethereum' | 'solana' | 'hyperliquid' | 'polymarket' | 'kalshi' | 'all';
+export type LeaderboardRankBy =
+  | 'realized_pnl_usd'
+  | 'net_pnl_usd'
+  | 'total_buy_volume_usd'
+  | 'total_sell_volume_usd'
+  | 'trade_count'
+  | 'true_win_rate'
+  | 'win_rate'
+  | 'tokens_traded'
+  | 'avg_trade_size_usd'
+  | 'largest_trade_usd'
+  | 'trader_score'
+  | 'pnl_realized_usd';
+export type LeaderboardFilter = Record<string, unknown>;
+export interface LeaderboardWallet {
+  rank: number;
+  wallet_address: string;
+  chain: string;
+  trader_score: number;
+  data_confidence: 'high' | 'medium' | 'low';
+  [key: string]: unknown;
+}
+export interface LeaderboardPayload {
+  wallets: LeaderboardWallet[];
+  total: number;
+  rank_by: string;
+  chain: string;
+  chain_defaults: Record<string, number>;
+  pipeline_info: Record<string, unknown>;
+  updated_at: string;
+}
+export interface LeaderboardScoreContext {
+  row: Record<string, any>;
+  math: {
+    clamp(value: number, min: number, max: number): number;
+    log10(value: number): number;
+  };
+}
+export interface SchemaField {
+  name: string;
+  type: string;
+  filter_ops: string[];
+  sortable: boolean;
+}
+export interface SchemaFieldsResult {
+  index: string;
+  concrete_indices: string[];
+  fields: SchemaField[];
+}
+export class Leaderboard {
+  chain(value: LeaderboardChain): this;
+  rankBy(value: LeaderboardRankBy | string): this;
+  sortByTraderScore(): this;
+  limit(value: number): this;
+  offset(value: number): this;
+  minTrades(value: number): this;
+  minTokens(value: number): this;
+  minClosed(value: number): this;
+  minBuyVol(value: number): this;
+  maxBuyVol(value: number): this;
+  hideBots(value?: boolean): this;
+  includeIdentity(value?: boolean): this;
+  where(filter: LeaderboardFilter): this;
+  whereEs(clause: Record<string, unknown>): this;
+  exclude(filter: LeaderboardFilter): this;
+  excludeEs(clause: Record<string, unknown>): this;
+  selectFields(fields: string[]): this;
+  traderScore(fn: (ctx: LeaderboardScoreContext) => number): this;
+  schemaFields(index: string): Promise<SchemaFieldsResult>;
+  execute(): Promise<LeaderboardPayload>;
+}
+
 // --- Hydration ---
 
 export interface HydrationShare { plugin: string; share?: number; params?: Record<string, unknown>; }
@@ -345,6 +420,7 @@ export class Studio {
   addScores(scoringResult: Array<{ id: string; score: number }>, scoringKey: string): void;
   ranking(): Ranking;
   addRanking(rankingResult: { items?: RankingItem[] }): void;
+  leaderboard(): Leaderboard;
   log(string: string): void;
   show(results?: SearchHit[]): void;
   getFeed(): SearchHit[];
