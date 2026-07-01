@@ -27,6 +27,8 @@ export class Search {
   _boost = [];
   _active_array = null;
   _trigger = null;
+  _as_leaderboard = false;
+  _trader_score_fn = null;
   lastCall = null;
   lastResult = null;
   constructor(options) {
@@ -177,6 +179,11 @@ export class Search {
     this._log(`  took_backend: ${res?.took_backend ?? 0}`);
     this._log(`  took_sdk: ${result.took_sdk}`);
     this._log(`  max_score: ${res?.max_score ?? 0}`);
+    if (this._as_leaderboard) {
+      const leaderboard = this._applyLeaderboardTransform(res.hits);
+      this._log(`  leaderboard: ${leaderboard.wallets.length} wallets`);
+      return leaderboard;
+    }
     return res.hits;
   }
   async frequentValues(field, size = 25) {
@@ -374,6 +381,57 @@ export class Search {
       ? { ...candidate, ...candidate._source }
       : candidate;
     return matchFilters(doc, this.getFilters());
+  }
+  asLeaderboard() { this._as_leaderboard = true; return this; }
+  traderScore(fn) {
+    if (fn != null && typeof fn !== 'function') {
+      throw new Error('Search.traderScore: argument must be a function or omitted for default');
+    }
+    this._trader_score_fn = fn || null;
+    this._as_leaderboard = true;
+    return this;
+  }
+  _defaultTraderScore(w) {
+    const buyVol = w.total_buy_volume_usd || 0;
+    const realizedPnl = w.realized_pnl_usd || w.pnl_realized_usd || 0;
+    const winning = w.winning_positions || 0;
+    const closed = w.closed_positions || 0;
+    const trades = w.trade_count || w.num_trades_30d || 0;
+    const pnl = Math.max(realizedPnl, 0);
+    const pnlMagnitude = Math.min(Math.max((Math.log10(Math.max(pnl, 1)) - 2) / 8.0, 0.0), 1.0);
+    const efficiency = buyVol > 0 ? pnl / buyVol : 0;
+    const rawEfficiency = Math.max(0.0, Math.min(efficiency, 1.0));
+    let normEfficiency = 0.0;
+    if (closed >= 1) {
+      const volFloor = buyVol > 0 ? Math.min(buyVol / 5000.0, 1.0) : 0;
+      normEfficiency = rawEfficiency * volFloor;
+    }
+    const adjustedWr = (winning + 1) / (closed + 2);
+    const consistency = Math.min(closed / 10.0, 1.0);
+    const activity = Math.min(Math.log10(trades + 1) / 4.0, 1.0);
+    return Math.round((
+      pnlMagnitude * 0.30
+      + adjustedWr * 0.25
+      + normEfficiency * 0.20
+      + consistency * 0.15
+      + activity * 0.10
+    ) * 10000) / 10000;
+  }
+  _applyLeaderboardTransform(hits) {
+    const wallets = (Array.isArray(hits) ? hits : []).map((hit, idx) => {
+      const src = hit._source && typeof hit._source === 'object' ? hit._source : hit;
+      const row = { ...src };
+      const scoreFn = this._trader_score_fn;
+      if (scoreFn) {
+        const math = { clamp: (v, lo, hi) => Math.min(Math.max(v, lo), hi) };
+        row.trader_score = scoreFn({ row, math });
+      } else {
+        row.trader_score = this._defaultTraderScore(row);
+      }
+      row.rank = idx + 1;
+      return row;
+    });
+    return { wallets };
   }
   log(string) { this._log(string); }
   show(results) { this._show(results); }
