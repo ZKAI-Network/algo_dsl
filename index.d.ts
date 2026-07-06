@@ -254,6 +254,8 @@ export class Search {
   getTrigger(): AlgoTrigger | null;
   execute(): Promise<SearchHit[]>;
   frequentValues(field: string, size?: number): Promise<FrequentValuesResult>;
+  asLeaderboard(): this;
+  traderScore(fn: (item: Record<string, unknown>) => number): this;
   lookup(docId: string): Promise<unknown>;
   log(string: string): void;
   show(results?: unknown): void;

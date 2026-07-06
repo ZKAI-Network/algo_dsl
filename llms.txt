@@ -1,4 +1,11 @@
-# algo_dsl 
+# algo_dsl
+
+## Current package surface
+
+- Version: `0.9.2`.
+- Search supports `.inAppUsers(field)`, `.asLeaderboard()`, and `.traderScore(fn)` for account-scoped wallet/user leaderboards.
+- Data ingestion helpers use `mbd.ingest()`.
+- User interaction payloads use `user_id_from` and `user_id_to`.
 
 ---
 

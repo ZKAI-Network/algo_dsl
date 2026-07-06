@@ -32,5 +32,8 @@
     "StudioConfig.js",
     "V1",
     "llms.txt"
-  ]
+  ],
+  "scripts": {
+    "check:docs-surface": "node scripts/check-doc-surface.mjs"
+  }
 }
