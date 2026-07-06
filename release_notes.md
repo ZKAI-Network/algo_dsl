@@ -49,3 +49,15 @@ No breaking changes. Algos without `.trigger(...)` default to subscribe.
   `algo-dsl/V1/notification/match.js`.
 
 No breaking changes; match mode is opt-in via `StudioConfig`.
+## 0.9.2
+
+- Added Search builder leaderboard helpers: `.asLeaderboard()` and `.traderScore(fn)`.
+- Updated TypeScript and LLM-facing docs so agents can generate leaderboard-style wallet/user feeds.
+
+## 0.9.1
+
+- Simplified `.inAppUsers(field)` to resolve account context from the API key.
+
+## 0.9.0
+
+- Added `.inAppUsers(field)` filters for account-scoped in-app users and wallets.
