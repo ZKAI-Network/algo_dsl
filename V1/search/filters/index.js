@@ -10,5 +10,6 @@ export { NotNullFilter } from './NotNullFilter.js';
 export { CustomFilter } from './CustomFilter.js';
 export { GroupBoostFilter } from './GroupBoostFilter.js';
 export { TermsLookupFilter } from './TermsLookupFilter.js';
+export { UserInteractionFilter } from './UserInteractionFilter.js';
 export { ConsoleAccountFilter } from './ConsoleAccountFilter.js';
 export { InAppUsersFilter } from './InAppUsersFilter.js';
