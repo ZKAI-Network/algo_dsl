@@ -239,6 +239,8 @@ export class Search {
   custom(field: string, value: unknown, boost?: number | null): this;
   groupBoost(lookup_index: string, field: string, value: unknown, group: string, min_boost?: number | null, max_boost?: number | null, n?: number | null): this;
   termsLookup(lookup_index: string, field: string, value: unknown, path: string, boost?: number | null): this;
+  userInteraction(field: string, value: unknown, listName: string, boost?: number | null): this;
+  /** @deprecated Use {@link Search.userInteraction} instead. */
   consoleAccount(field: string, value: unknown, path: string, boost?: number | null): this;
   /** Filter by the calling customer's in_app_users audience — wallets pushed
    *  via the data sources users API. The account_id is resolved server-side

@@ -1,6 +1,7 @@
 import {
   Filter, TermFilter, TermsFilter, NumericFilter, MatchFilter, GeoFilter, DateFilter,
-  IsNullFilter, NotNullFilter, CustomFilter, GroupBoostFilter, TermsLookupFilter, ConsoleAccountFilter,
+  IsNullFilter, NotNullFilter, CustomFilter, GroupBoostFilter, TermsLookupFilter,
+  UserInteractionFilter, ConsoleAccountFilter,
   InAppUsersFilter,
 } from './filters/index.js';
 import { matchFilters } from '../notification/match.js';
@@ -372,6 +373,8 @@ export class Search {
   custom(field, value, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new CustomFilter(field, value, boost)); return this; }
   groupBoost(lookup_index, field, value, group, min_boost = null, max_boost = null, n = null) { this._requireActiveArray(); this._active_array.push(new GroupBoostFilter(lookup_index, field, value, group, min_boost, max_boost, n)); return this; }
   termsLookup(lookup_index, field, value, path, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new TermsLookupFilter(lookup_index, field, value, path, boost)); return this; }
+  userInteraction(field, value, listName, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new UserInteractionFilter(field, value, listName, boost)); return this; }
+  /** @deprecated use userInteraction(...) — kept for algos deployed before the rename. */
   consoleAccount(field, value, path, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new ConsoleAccountFilter(field, value, path, boost)); return this; }
   inAppUsers(field, boost = null) { this._requireActiveArray(); this._requireBoostForBoostArray(boost); this._active_array.push(new InAppUsersFilter(field, boost)); return this; }
   /** Synchronously test whether `candidate` would pass this Search's include/exclude filters.

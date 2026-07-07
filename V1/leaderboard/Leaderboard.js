@@ -171,8 +171,8 @@ function filterToClause(filter) {
   if (filter.filter === 'terms_lookup') {
     return { terms: { [filter.field]: { index: filter.lookup_index || filter.index, id: filter.id || filter.value, path: filter.path } } };
   }
-  if (filter.filter === 'console_account') {
-    return { terms: { [filter.field]: { index: 'console-accounts', id: filter.console_account_id, path: filter.path } } };
+  if (filter.filter === 'user_interaction' || filter.filter === 'console_account') {
+    return { terms: { [filter.field]: { index: 'console-accounts', id: filter.value || filter.console_account_id, path: filter.path } } };
   }
   throw new Error(`Unsupported leaderboard filter: ${filter.filter}`);
 }

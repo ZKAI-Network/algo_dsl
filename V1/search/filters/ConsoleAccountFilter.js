@@ -1,10 +1,20 @@
-import { Filter } from './Filter.js';
+import { UserInteractionFilter } from './UserInteractionFilter.js';
 
-/** Filters by console account data. path: dot-notation field in the account doc. */
-export class ConsoleAccountFilter extends Filter {
+let _warned = false;
+
+/** @deprecated Use {@link UserInteractionFilter} (search.userInteraction(...)) instead.
+ *  Subclass emits the same `filter: 'user_interaction'` token as UserInteractionFilter,
+ *  so migration is transparent server-side. */
+export class ConsoleAccountFilter extends UserInteractionFilter {
   constructor(field, value, path, boost = null) {
-    super('console_account', field, boost);
-    this.value = value;
-    this.path = path;
+    super(field, value, path, boost);
+    if (!_warned) {
+      _warned = true;
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[algo_dsl] search.consoleAccount(...) / ConsoleAccountFilter is deprecated; ' +
+        'use search.userInteraction(...) / UserInteractionFilter.',
+      );
+    }
   }
 }
